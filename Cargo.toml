@@ -13,4 +13,7 @@ chrono = "0.4.24"
 dotenv = "0.15.0"
 env_logger = "0.10.0"
 log = "0.4.17"
+rand = "0.8.5"
 tiny_http = "0.12.0"
+ureq = { version = "2.6.2", features = ["json"] }
+url = "2.3.1"
