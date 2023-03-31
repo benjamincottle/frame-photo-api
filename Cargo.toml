@@ -12,6 +12,7 @@ protocol = "sparse"  # requires Rust 1.68
 chrono = "0.4.24"
 dotenv = "0.15.0"
 env_logger = "0.10.0"
+image = { version = "0.24.6", features = ["jpeg"] }
 log = "0.4.17"
 rand = "0.8.5"
 serde = { version = "1.0.158", features = ["derive"] }
