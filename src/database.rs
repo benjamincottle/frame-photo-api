@@ -31,6 +31,12 @@ impl DBClient {
         Ok(())
     }
 
+    pub fn remove_record(&mut self, record: Record) -> Result<(), postgres::Error> {
+        self.0
+            .execute("DELETE FROM album WHERE id = $1", &[&record.id])?;
+        Ok(())
+    }
+
     pub fn remove_records(
         &mut self,
         media_item_ids: &HashSet<String>,
