@@ -1,5 +1,8 @@
-use postgres::{Client, NoTls};
-use std::collections::HashSet;
+use postgres::{Client, Error, NoTls};
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::{Arc, Mutex},
+};
 
 pub struct Record {
     pub id: String,
@@ -10,9 +13,9 @@ pub struct Record {
 pub struct DBClient(Client);
 
 impl DBClient {
-    pub fn new() -> Result<DBClient, postgres::Error> {
+    pub fn connect(database_url: &str) -> Result<DBClient, postgres::Error> {
         let client = DBClient(Client::connect(
-            "host=localhost user=frame_user dbname=frame password=password",
+            database_url,
             NoTls,
         )?);
         Ok(client)
@@ -31,9 +34,9 @@ impl DBClient {
         Ok(())
     }
 
-    pub fn remove_record(&mut self, record: Record) -> Result<(), postgres::Error> {
+    pub fn remove_record(&mut self, record_id: String) -> Result<(), postgres::Error> {
         self.0
-            .execute("DELETE FROM album WHERE id = $1", &[&record.id])?;
+            .execute("DELETE FROM album WHERE id = $1", &[&record_id])?;
         Ok(())
     }
 
@@ -55,5 +58,33 @@ impl DBClient {
             media_item_ids.insert(media_item_id.to_string());
         }
         Ok(media_item_ids)
+    }
+}
+
+pub struct ConnectionPool {
+    connections: Arc<Mutex<VecDeque<DBClient>>>,
+}
+
+impl ConnectionPool {
+    pub fn new(database_url: &str, pool_size: usize) -> Result<Self, Error> {
+        let mut connections = VecDeque::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            let client = DBClient::connect(database_url)?;
+            connections.push_back(client);
+        }
+        Ok(Self {
+            connections: Arc::new(Mutex::new(connections)),
+        })
+    }
+
+    pub fn get_connection(&self) -> Result<DBClient, Error> {
+        let mut connections = self.connections.lock().unwrap();
+        let client = connections.pop_front().unwrap();
+        Ok(client)
+    }
+
+    pub fn return_connection(&self, client: DBClient) {
+        let mut connections = self.connections.lock().unwrap();
+        connections.push_back(client);
     }
 }
