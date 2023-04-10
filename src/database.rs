@@ -14,10 +14,7 @@ pub struct DBClient(Client);
 
 impl DBClient {
     pub fn connect(database_url: &str) -> Result<DBClient, postgres::Error> {
-        let client = DBClient(Client::connect(
-            database_url,
-            NoTls,
-        )?);
+        let client = DBClient(Client::connect(database_url, NoTls)?);
         Ok(client)
     }
 
