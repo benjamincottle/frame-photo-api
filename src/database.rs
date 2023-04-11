@@ -18,11 +18,6 @@ impl DBClient {
         Ok(client)
     }
 
-    pub fn close(self) -> Result<(), postgres::Error> {
-        self.0.close()?;
-        Ok(())
-    }
-
     pub fn add_record(&mut self, record: Record) -> Result<(), Error> {
         self.0.execute(
             "INSERT INTO album (id, ts, data) VALUES ($1, $2, $3)",
@@ -34,17 +29,6 @@ impl DBClient {
     pub fn remove_record(&mut self, record_id: String) -> Result<(), Error> {
         self.0
             .execute("DELETE FROM album WHERE id = $1", &[&record_id])?;
-        Ok(())
-    }
-
-    pub fn remove_records(
-        &mut self,
-        media_item_ids: &HashSet<String>,
-    ) -> Result<(), postgres::Error> {
-        for media_item_id in media_item_ids {
-            self.0
-                .execute("DELETE FROM album WHERE id = $1", &[&media_item_id])?;
-        }
         Ok(())
     }
 
