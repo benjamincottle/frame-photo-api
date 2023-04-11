@@ -13,7 +13,7 @@ pub struct Record {
 pub struct DBClient(Client);
 
 impl DBClient {
-    pub fn connect(database_url: &str) -> Result<DBClient, postgres::Error> {
+    pub fn connect(database_url: &str) -> Result<DBClient, Error> {
         let client = DBClient(Client::connect(database_url, NoTls)?);
         Ok(client)
     }
@@ -23,7 +23,7 @@ impl DBClient {
         Ok(())
     }
 
-    pub fn add_record(&mut self, record: Record) -> Result<(), postgres::Error> {
+    pub fn add_record(&mut self, record: Record) -> Result<(), Error> {
         self.0.execute(
             "INSERT INTO album (id, ts, data) VALUES ($1, $2, $3)",
             &[&record.id, &record.ts, &record.data],
@@ -31,7 +31,7 @@ impl DBClient {
         Ok(())
     }
 
-    pub fn remove_record(&mut self, record_id: String) -> Result<(), postgres::Error> {
+    pub fn remove_record(&mut self, record_id: String) -> Result<(), Error> {
         self.0
             .execute("DELETE FROM album WHERE id = $1", &[&record_id])?;
         Ok(())
@@ -48,7 +48,7 @@ impl DBClient {
         Ok(())
     }
 
-    pub fn get_mediaitems_set(&mut self) -> Result<HashSet<String>, postgres::Error> {
+    pub fn get_mediaitems_set(&mut self) -> Result<HashSet<String>, Error> {
         let mut media_item_ids = HashSet::new();
         for row in self.0.query("SELECT id FROM album", &[])? {
             let media_item_id: &str = row.get(0);
@@ -74,9 +74,12 @@ impl ConnectionPool {
         })
     }
 
-    pub fn get_connection(&self) -> Result<DBClient, Error> {
+    pub fn get_connection(&self) -> Result<DBClient, std::io::Error> {
         let mut connections = self.connections.lock().unwrap();
-        let client = connections.pop_front().unwrap();
+        let client = connections.pop_front().ok_or(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "[Error] Connection pool is exhausted",
+        ))?;
         Ok(client)
     }
 
