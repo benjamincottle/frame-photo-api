@@ -10,7 +10,7 @@ pub struct Record {
     pub data: Vec<u8>,
 }
 
-pub struct DBClient(Client);
+pub struct DBClient(pub Client);
 
 impl DBClient {
     pub fn connect(database_url: &str) -> Result<DBClient, Error> {
