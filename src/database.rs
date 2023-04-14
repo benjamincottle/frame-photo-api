@@ -53,7 +53,7 @@ pub struct Record {
 pub struct DBClient(pub Client);
 
 impl DBClient {
-    pub fn connect(database_url: &str) -> Result<DBClient, Error> {
+    fn connect(database_url: &str) -> Result<DBClient, Error> {
         let client = DBClient(Client::connect(database_url, NoTls)?);
         Ok(client)
     }
