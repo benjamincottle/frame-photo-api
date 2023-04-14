@@ -1,8 +1,48 @@
+use lazy_static::lazy_static;
 use postgres::{Client, Error, NoTls};
 use std::{
     collections::{HashSet, VecDeque},
-    sync::{Arc, Mutex},
+    env,
+    process::exit,
+    sync::Mutex,
 };
+
+lazy_static! {
+    pub static ref CONNECTION_POOL: Mutex<VecDeque<DBClient>> = {
+        let database_url = &env::var("POSTGRES_CONNECTION_STRING").expect("previously validated");
+        let pool_size = 4;
+        let mut connections: VecDeque<DBClient> = VecDeque::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            if let Some(client) = DBClient::connect(database_url).ok() {
+                connections.push_back(client);
+            }
+        }
+        if connections.len() != pool_size {
+            log::error!("[Error] (database) failed to create connection pool");
+            exit(1);
+        }
+        Mutex::new(connections)
+    };
+}
+
+impl CONNECTION_POOL {
+    pub fn get_client(&self) -> Result<DBClient, std::io::Error> {
+        let mut connections = self.lock().unwrap();
+        if let Some(client) = connections.pop_front() {
+            Ok(client)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "[Error] connection pool is exhausted",
+            ))
+        }
+    }
+
+    pub fn release_client(&self, client: DBClient) {
+        let mut connections = self.lock().unwrap();
+        connections.push_back(client);
+    }
+}
 
 pub struct Record {
     pub item_id: String,
@@ -39,36 +79,5 @@ impl DBClient {
             media_item_ids.insert(media_item_id.to_string());
         }
         Ok(media_item_ids)
-    }
-}
-
-pub struct ConnectionPool {
-    connections: Arc<Mutex<VecDeque<DBClient>>>,
-}
-
-impl ConnectionPool {
-    pub fn new(database_url: &str, pool_size: usize) -> Result<Self, Error> {
-        let mut connections = VecDeque::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            let client = DBClient::connect(database_url)?;
-            connections.push_back(client);
-        }
-        Ok(Self {
-            connections: Arc::new(Mutex::new(connections)),
-        })
-    }
-
-    pub fn get_connection(&self) -> Result<DBClient, std::io::Error> {
-        let mut connections = self.connections.lock().unwrap();
-        let client = connections.pop_front().ok_or(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "[Error] Connection pool is exhausted",
-        ))?;
-        Ok(client)
-    }
-
-    pub fn return_connection(&self, client: DBClient) {
-        let mut connections = self.connections.lock().unwrap();
-        connections.push_back(client);
     }
 }
