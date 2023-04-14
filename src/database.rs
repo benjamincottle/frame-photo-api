@@ -10,7 +10,7 @@ use std::{
 lazy_static! {
     pub static ref CONNECTION_POOL: Mutex<VecDeque<DBClient>> = {
         let database_url = &env::var("POSTGRES_CONNECTION_STRING").expect("previously validated");
-        let pool_size = 4;
+        let pool_size = 6;
         let mut connections: VecDeque<DBClient> = VecDeque::with_capacity(pool_size);
         for _ in 0..pool_size {
             if let Some(client) = DBClient::connect(database_url).ok() {
@@ -21,6 +21,10 @@ lazy_static! {
             log::error!("[Error] (database) failed to create connection pool");
             exit(1);
         }
+        log::info!(
+            "[Info] (database) pool created, initial size: {}",
+            pool_size
+        );
         Mutex::new(connections)
     };
 }
