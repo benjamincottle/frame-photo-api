@@ -1,10 +1,11 @@
 use lazy_static::lazy_static;
 use postgres::{Client, Error, NoTls};
+use uuid::Uuid;
 use std::{
     collections::{HashSet, VecDeque},
     env,
     process::exit,
-    sync::Mutex,
+    sync::Mutex, net::IpAddr,
 };
 
 lazy_static! {
@@ -48,8 +49,9 @@ impl CONNECTION_POOL {
     }
 }
 
-pub struct Record {
+pub struct AlbumRecord {
     pub item_id: String,
+    pub product_url: String,
     pub ts: i64,
     pub data: Vec<u8>,
 }
@@ -62,10 +64,10 @@ impl DBClient {
         Ok(client)
     }
 
-    pub fn add_record(&mut self, record: Record) -> Result<(), Error> {
+    pub fn add_record(&mut self, record: AlbumRecord) -> Result<(), Error> {
         self.0.execute(
-            "INSERT INTO album (item_id, ts, data) VALUES ($1, $2, $3)",
-            &[&record.item_id, &record.ts, &record.data],
+            "INSERT INTO album (item_id, product_url, ts, data) VALUES ($1, $2, $3, $4)",
+            &[&record.item_id, &record.product_url, &record.ts, &record.data],
         )?;
         Ok(())
     }
@@ -84,4 +86,18 @@ impl DBClient {
         }
         Ok(media_item_ids)
     }
+}
+
+pub struct TelemetryRecord {
+    pub id: i32,
+    pub ts: i64,
+    pub item_id: Option<String>,
+    pub chip_id: i32,
+    pub uuid_number: Uuid,
+    pub bat_voltage: i32,
+    pub boot_code: i32,
+    pub error_code: i32,
+    pub return_code: Option<i32>,
+    pub write_bytes: Option<i32>,
+    pub remote_addr: Vec<IpAddr>,
 }
