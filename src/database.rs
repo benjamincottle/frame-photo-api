@@ -1,5 +1,6 @@
 use lazy_static::lazy_static;
 use postgres::{Client, Error, NoTls};
+use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 use std::{
     collections::{HashSet, VecDeque},
@@ -88,6 +89,7 @@ impl DBClient {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TelemetryRecord {
     pub id: i32,
     pub ts: i64,
