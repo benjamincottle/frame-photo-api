@@ -1,13 +1,14 @@
 use lazy_static::lazy_static;
 use postgres::{Client, Error, NoTls};
-use serde::{Serialize, Deserialize};
-use uuid::Uuid;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashSet, VecDeque},
     env,
+    net::IpAddr,
     process::exit,
-    sync::Mutex, net::IpAddr,
+    sync::Mutex,
 };
+use uuid::Uuid;
 
 lazy_static! {
     pub static ref CONNECTION_POOL: Mutex<VecDeque<DBClient>> = {
@@ -68,7 +69,12 @@ impl DBClient {
     pub fn add_record(&mut self, record: AlbumRecord) -> Result<(), Error> {
         self.0.execute(
             "INSERT INTO album (item_id, product_url, ts, data) VALUES ($1, $2, $3, $4)",
-            &[&record.item_id, &record.product_url, &record.ts, &record.data],
+            &[
+                &record.item_id,
+                &record.product_url,
+                &record.ts,
+                &record.data,
+            ],
         )?;
         Ok(())
     }
