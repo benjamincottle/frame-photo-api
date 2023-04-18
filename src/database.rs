@@ -33,6 +33,11 @@ lazy_static! {
 }
 
 impl CONNECTION_POOL {
+    #[allow(unused_must_use)]
+    pub fn initialise(&self) {
+        self.lock().unwrap();
+    }
+
     pub fn get_client(&self) -> Result<DBClient, std::io::Error> {
         let mut connections = self.lock().unwrap();
         if let Some(client) = connections.pop_front() {
