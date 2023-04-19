@@ -105,6 +105,7 @@ pub struct TelemetryRecord {
     pub id: i32,
     pub ts: i64,
     pub item_id: Option<String>,
+    pub product_url: Option<String>,
     pub chip_id: i32,
     pub uuid_number: Uuid,
     pub bat_voltage: i32,
