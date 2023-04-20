@@ -3,7 +3,6 @@ use postgres::{Client, Error, NoTls};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashSet, VecDeque},
-    env,
     net::IpAddr,
     process::exit,
     sync::Mutex,
@@ -12,35 +11,30 @@ use uuid::Uuid;
 
 lazy_static! {
     pub static ref CONNECTION_POOL: Mutex<VecDeque<DBClient>> = {
-        let database_url = &env::var("POSTGRES_CONNECTION_STRING").expect("previously validated");
-        let pool_size = 6;
-        let mut connections: VecDeque<DBClient> = VecDeque::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            if let Some(client) = DBClient::connect(database_url).ok() {
-                connections.push_back(client);
-            }
-        }
-        if connections.len() != pool_size {
-            log::error!("[Error] (database) failed to create connection pool");
-            exit(1);
-        }
-        log::info!(
-            "[Info] (database) pool created, initial size: {}",
-            pool_size
-        );
-        Mutex::new(connections)
+        let pool: VecDeque<DBClient> = VecDeque::new();
+        log::info!("[Info] (database) empty pool created");
+        Mutex::new(pool)
     };
 }
 
 impl CONNECTION_POOL {
-    #[allow(unused_must_use)]
-    pub fn initialise(&self) {
-        self.lock().unwrap();
+    pub fn initialise(&self, database_url: &str, pool_size: usize) {
+        let mut pool = self.lock().unwrap();
+        for _ in 0..pool_size {
+            if let Some(client) = DBClient::connect(database_url).ok() {
+                pool.push_back(client);
+            }
+        }
+        if pool.len() != pool_size {
+            log::error!("[Error] (database) failed to create connection pool");
+            exit(1);
+        }
+        log::info!("[Info] (database) pool populated, size: {}", pool_size);
     }
 
     pub fn get_client(&self) -> Result<DBClient, std::io::Error> {
-        let mut connections = self.lock().unwrap();
-        if let Some(client) = connections.pop_front() {
+        let mut pool = self.lock().unwrap();
+        if let Some(client) = pool.pop_front() {
             Ok(client)
         } else {
             Err(std::io::Error::new(
@@ -51,8 +45,8 @@ impl CONNECTION_POOL {
     }
 
     pub fn release_client(&self, client: DBClient) {
-        let mut connections = self.lock().unwrap();
-        connections.push_back(client);
+        let mut pool = self.lock().unwrap();
+        pool.push_back(client);
     }
 }
 
