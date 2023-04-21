@@ -96,7 +96,6 @@ impl DBClient {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TelemetryRecord {
-    pub id: i32,
     pub ts: i64,
     pub item_id: Option<String>,
     pub product_url: Option<String>,
