@@ -4,44 +4,44 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashSet, VecDeque},
     net::IpAddr,
-    process::exit,
     sync::Mutex,
 };
 use uuid::Uuid;
 
 lazy_static! {
     pub static ref CONNECTION_POOL: Mutex<VecDeque<DBClient>> = {
-        let pool: VecDeque<DBClient> = VecDeque::new();
-        log::info!("[Info] (database) empty pool created");
-        Mutex::new(pool)
+        log::info!("empty pool created");
+        Mutex::new(VecDeque::<DBClient>::new())
     };
 }
 
 impl CONNECTION_POOL {
-    pub fn initialise(&self, database_url: &str, pool_size: usize) {
+    pub fn initialise(&self, database_url: &str, pool_size: usize) -> Result<(), postgres::Error> {
         let mut pool = self.lock().unwrap();
-        for _ in 0..pool_size {
-            if let Some(client) = DBClient::connect(database_url).ok() {
-                pool.push_back(client);
+        for _ in pool.len()..pool_size {
+            match DBClient::connect(database_url) {
+                Ok(client) => pool.push_back(client),
+                Err(e) => {
+                    log::error!("failed to create connection: {:?}", e);
+                    return Err(e);
+                }
             }
         }
-        if pool.len() != pool_size {
-            log::error!("[Error] (database) failed to create connection pool");
-            exit(1);
-        }
-        log::info!("[Info] (database) pool populated, size: {}", pool_size);
+        log::info!("connection pool populated, size: {}", pool_size);
+        Ok(())
     }
 
     pub fn get_client(&self) -> Result<DBClient, std::io::Error> {
         let mut pool = self.lock().unwrap();
-        if let Some(client) = pool.pop_front() {
-            Ok(client)
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "[Error] connection pool is exhausted",
-            ))
-        }
+        match pool.pop_front() {
+            Some(client) => return Ok(client),
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "connection pool is exhausted",
+                ))
+            }
+        };
     }
 
     pub fn release_client(&self, client: DBClient) {
@@ -50,17 +50,10 @@ impl CONNECTION_POOL {
     }
 }
 
-pub struct AlbumRecord {
-    pub item_id: String,
-    pub product_url: String,
-    pub ts: i64,
-    pub data: Vec<u8>,
-}
-
 pub struct DBClient(pub Client);
 
 impl DBClient {
-    fn connect(database_url: &str) -> Result<DBClient, Error> {
+    fn connect(database_url: &str) -> Result<DBClient, postgres::Error> {
         let client = DBClient(Client::connect(database_url, NoTls)?);
         Ok(client)
     }
@@ -78,13 +71,13 @@ impl DBClient {
         Ok(())
     }
 
-    pub fn remove_record(&mut self, record_id: String) -> Result<(), Error> {
+    pub fn remove_record(&mut self, record_id: String) -> Result<(), postgres::Error> {
         self.0
             .execute("DELETE FROM album WHERE item_id = $1", &[&record_id])?;
         Ok(())
     }
 
-    pub fn get_mediaitems_set(&mut self) -> Result<HashSet<String>, Error> {
+    pub fn get_mediaitems_set(&mut self) -> Result<HashSet<String>, postgres::Error> {
         let mut media_item_ids = HashSet::new();
         for row in self.0.query("SELECT item_id FROM album", &[])? {
             let media_item_id: &str = row.get(0);
@@ -92,6 +85,13 @@ impl DBClient {
         }
         Ok(media_item_ids)
     }
+}
+
+pub struct AlbumRecord {
+    pub item_id: String,
+    pub product_url: String,
+    pub ts: i64,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
