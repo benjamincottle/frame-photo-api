@@ -1,5 +1,3 @@
-mod config;
-
 use frame::database::{CONNECTION_POOL, AlbumRecord, TelemetryRecord};
 
 use dotenv;
@@ -8,7 +6,7 @@ use log;
 use serde::{Deserialize, Serialize};
 use ureq::serde_json;
 use uuid::Uuid;
-use std::{env, sync::Arc, thread, time::{UNIX_EPOCH, SystemTime}, net::{SocketAddr, IpAddr, Ipv4Addr}, io::Read, str::FromStr};
+use std::{env, sync::Arc, thread, time::{UNIX_EPOCH, SystemTime}, net::{SocketAddr, IpAddr, Ipv4Addr}, io::Read, str::FromStr, process::exit};
 use tiny_http::{Server, Response, Request};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -115,7 +113,13 @@ fn main() {
     );
     let database_url = &env::var("POSTGRES_CONNECTION_STRING").expect("previously validated");
     let pool_size = 2;
-    CONNECTION_POOL.initialise(database_url, pool_size);
+    match CONNECTION_POOL.initialise(database_url, pool_size) {
+        Err(e) => {
+            log::error!("failed to initialise connection pool: {:?}", e);
+            exit(1);
+        }
+        _ => {}
+    };
     let server = Arc::new(server);
     for _ in 0..2 {
         let server = server.clone();
