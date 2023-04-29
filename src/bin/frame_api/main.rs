@@ -47,7 +47,7 @@ where
         response.data_length().expect("This should not fail"),
     );
     if let Err(e) = request.respond(response) {
-        log::error!("[Error] (dispatch_reponse) could not send response: {}", e);
+        log::error!("could not send response: {}", e);
     }
 }
 
@@ -103,7 +103,7 @@ fn main() {
     dotenv::from_path("secrets/.env").ok();
     env_logger::init();
     if env::var("API_KEY").is_err() || env::var("POSTGRES_CONNECTION_STRING").is_err() {
-        log::error!("[Error] (main) environment not configured");
+        log::error!("environment not configured");
         return;
     }
     let server = Server::http("0.0.0.0:5000").expect("This should not fail");
@@ -127,7 +127,7 @@ fn main() {
             let mut request = match server.recv() {
                 Ok(r) => r,
                 Err(e) => {
-                    log::error!("[Error] (main) could not receive request: {}", e);
+                    log::error!("could not receive request: {}", e);
                     continue;
                 }
             };
@@ -172,7 +172,7 @@ fn main() {
                 Ok(record) => {
                     record},
                 Err(e) => { 
-                    log::error!("[Error] (main) could not get record: {}", e); 
+                    log::error!("could not get record: {}", e); 
                     serve_error(request, tiny_http::StatusCode(500), "Internal server error"); 
                     continue; 
                 }   
