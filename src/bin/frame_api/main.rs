@@ -145,8 +145,6 @@ fn main() {
                 serve_error(request, tiny_http::StatusCode(404), "Not found");
                 continue;
             }
-
-            // curl -v -X POST http://localhost:5000/frame -H "API_KEY: ***REMOVED***" -H "Content-Type: application/json" -d "[{\"chipID\":11073650,\"uuidNumber\":\"bc598d5a-aa10-4bfc-986b-114073a3a806\",\"bootCode\":5,\"batVoltage\":3840,\"returnCode\":200,\"writeBytes\":134400,\"errorCode\":1},{\"chipID\":11073650,\"uuidNumber\":\"5ac03c9b-f217-4da3-ae3e-498be5589c37\",\"bootCode\":5,\"batVoltage\":3840,\"returnCode\":null,\"writeBytes\":null,\"errorCode\":1}]"
             let now = SystemTime::now();
             let ts = match now.duration_since(UNIX_EPOCH) {
                 Ok(duration) => duration.as_secs() as i64,
@@ -155,7 +153,7 @@ fn main() {
             let mut dbclient = CONNECTION_POOL.get_client().unwrap();
             let album_record = match dbclient
             .0
-            .query("SELECT item_id, product_url, ts, data FROM album WHERE ts = (SELECT MIN(ts) from album) LIMIT 1", &[])
+            .query("SELECT item_id, product_url, ts, data FROM album WHERE ts = (SELECT MIN(ts) from album) ORDER BY RANDOM() LIMIT 1", &[])
             .and_then(|records| {
                 let row = records.get(0).unwrap();
                 let record = AlbumRecord {
