@@ -190,7 +190,6 @@ fn main() {
                     write_bytes: log_doc.writeBytes,
                     remote_addr: vec!(request.remote_addr().unwrap().ip()),
                 };
-                // println!("{:?}", record);
                 let r = dbclient.0.execute(
                     "
                     INSERT INTO telemetry (ts, item_id, product_url, chip_id, uuid_number, bat_voltage, boot_code, error_code, return_code, write_bytes, remote_addr) 
@@ -215,14 +214,14 @@ fn main() {
 
             }
             CONNECTION_POOL.release_client(dbclient);
-            let response = Response::from_string("Ok".to_string());
             // let response = Response::from_data(album_record.data)
             // .with_header(tiny_http::Header::from_str("Content-Type: application/octet-stream").expect("This should never fail"),
             // );
-            log_request(&request, 200, response.data_length().unwrap_or(0));
-            if let Err(e) = request.respond(response) {
-                log::error!("Could not send response: {}", e);
-            }
+            
+            let response = Response::from_string("Ok\n".to_string());
+
+            dispatch_response(request, response);
+
 
         });
     }
