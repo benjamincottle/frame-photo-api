@@ -1,6 +1,7 @@
 use frame::database::{AlbumRecord, TelemetryRecord, CONNECTION_POOL};
 
 use env_logger;
+use image::DynamicImage;
 use log;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,11 +12,23 @@ use std::{
     str::FromStr,
     sync::Arc,
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH}, collections::HashMap,
 };
 use tiny_http::{Request, Response, Server};
 use ureq::serde_json;
 use uuid::Uuid;
+
+const EPD_WIDTH: u32 = 600;
+const EPD_HEIGHT: u32 = 448;
+const PALETTE: [(u8, u8, u8); 7] = [
+    (0, 0, 0),       // Black
+    (255, 255, 255), // White
+    (0, 255, 0),     // Green
+    (0, 0, 255),     // Blue
+    (255, 0, 0),     // Red
+    (255, 255, 0),   // Yellow
+    (255, 128, 0),   // Orange
+];
 
 #[derive(Debug, Deserialize, Serialize)]
 struct PostData {
@@ -99,6 +112,58 @@ pub fn log_request(request: &tiny_http::Request, status: u16, size: usize) {
     );
 }
 
+pub fn decode_image(data: Vec<u8>) -> Result<DynamicImage, Box<dyn std::error::Error>> {
+    let map: HashMap<u8, (u8, u8, u8)> = PALETTE
+        .iter()
+        .enumerate()
+        .map(|(i, &rgb)| (i as u8, rgb))
+        .collect();
+    let (nwidth, nheight, w, h) = match data.len() == (EPD_WIDTH * EPD_HEIGHT / 2) as usize {
+        true => (
+            EPD_WIDTH,
+            EPD_HEIGHT,
+            EPD_WIDTH as usize,
+            EPD_HEIGHT as usize,
+        ),
+        false => (
+            (EPD_WIDTH / 2),
+            EPD_HEIGHT,
+            (EPD_WIDTH / 2) as usize,
+            EPD_HEIGHT as usize,
+        ),
+    };
+    let mut pixels: Vec<u8> = Vec::with_capacity(3 * w * h / 2);
+    let mut buf: Vec<u8> = Vec::with_capacity(2);
+    for byte in data {
+        let p1 = byte >> 4;
+        let p2 = byte & 0x0F;
+        buf.push(p1);
+        buf.push(p2);
+        if buf.len() == 2 {
+            let p1 = map[&buf[0]];
+            let p2 = map[&buf[1]];
+            pixels.push(p1.0);
+            pixels.push(p1.1);
+            pixels.push(p1.2);
+            pixels.push(p2.0);
+            pixels.push(p2.1);
+            pixels.push(p2.2);
+            buf = Vec::with_capacity(2);
+        }
+    }
+    let image_buf = image::ImageBuffer::from_raw(nwidth, nheight, pixels);
+    let dimage = match image_buf {
+        Some(buf) => DynamicImage::ImageRgb8(buf),
+        None => {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "(decode_image) Invalid image data image_buf is None",
+            )));
+        }
+    };
+    Ok(dimage)
+}
+
 // TODO: Config implementation
 fn main() {
     // for debugging purposes
@@ -160,7 +225,6 @@ fn main() {
                 Err(_) => panic!("SystemTime before UNIX EPOCH!"),
             };
             let mut dbclient = CONNECTION_POOL.get_client().unwrap();
-
             let album_records = match dbclient
                 .0
                 .query(
@@ -218,47 +282,15 @@ fn main() {
                 }) {
                 Ok(records) => records,
                 Err(e) => {
-                    log::error!("could not get record: {}", e);
+                    log::error!("could not get record(s): {}", e);
                     serve_error(request, tiny_http::StatusCode(500), "Internal server error");
                     continue;
                 }
             };
-
-            // let album_record = match dbclient
-            // .0
-            // .query("SELECT item_id, product_url, ts, portrait, data FROM album WHERE ts = (SELECT MIN(ts) from album) ORDER BY RANDOM() LIMIT 1", &[])
-            // .and_then(|records| {
-            //     let row = records.get(0).unwrap();
-            //     let record = AlbumRecord {
-            //         item_id: row.get(0),
-            //         product_url: row.get(1),
-            //         ts: row.get(2),
-            //         portrait: row.get(3),
-            //         data: row.get(4),
-            //     };
-            //     Ok(record)
-            // })
-            //  {
-            //     Ok(record) => {
-            //         record},
-            //     Err(e) => {
-            //         log::error!("could not get record: {}", e);
-            //         serve_error(request, tiny_http::StatusCode(500), "Internal server error");
-            //         continue;
-            //     }
-            // };
-
-            // Create a new vector of size 600x448, initialized with all zeros.
-            // Iterate over each row in the images (there are 448 rows).
-            // For each row, iterate over the columns of both images (300 columns each).
-            // For each pixel in the first image, copy its value into the corresponding position in the new vector (e.g., if the pixel is at row i and column j, copy it to row i and column j in the new vector).
-            // For each pixel in the second image, copy its value into the corresponding position in the new vector (e.g., if the pixel is at row i and column j in the second image, copy it to row i and column j + 300 in the new vector).
-            // Return the new vector.
-
             let (data_to_send, item_id, product_url, item_id_2, product_url_2) =
                 match album_records.len() == 2 {
                     true => {
-                        let w = 600 / 2;
+                        let w = 600 / 2; // 2 pixels are packed per byte
                         let h = 448;
                         let xs1 = &album_records[0].data;
                         let xs2 = &album_records[1].data;
@@ -269,7 +301,6 @@ fn main() {
                                 xs[y * w + x + (w / 2)] = xs2[y * (w / 2) + x];
                             }
                         }
-
                         (
                             xs,
                             Some(album_records[0].item_id.clone()),
@@ -286,7 +317,6 @@ fn main() {
                         None,
                     ),
                 };
-
             let mut buf = String::new();
             request.as_reader().read_to_string(&mut buf).unwrap();
             let log_documents: Vec<LogDoc> = serde_json::from_str(&buf).unwrap();
@@ -328,9 +358,13 @@ fn main() {
                         &record.remote_addr,
                     ],
                 ).unwrap();
-                println!("{} rows affected", r);
             }
             CONNECTION_POOL.release_client(dbclient);
+
+            let xx = decode_image(data_to_send).unwrap();
+            xx.save("public/test.jpg").unwrap();
+
+
             // let response = Response::from_data(data_to_send)
             // .with_header(tiny_http::Header::from_str("Content-Type: application/octet-stream").expect("This should never fail"),
             // );
