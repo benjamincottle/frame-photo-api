@@ -60,20 +60,21 @@ impl DBClient {
 
     pub fn add_record(&mut self, record: AlbumRecord) -> Result<(), Error> {
         self.0.execute(
-            "INSERT INTO album (item_id, product_url, ts, data) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO album (item_id, product_url, ts, portrait, data) VALUES ($1, $2, $3, $4, $5)",
             &[
                 &record.item_id,
                 &record.product_url,
                 &record.ts,
+                &record.portrait,
                 &record.data,
             ],
         )?;
         Ok(())
     }
 
-    pub fn remove_record(&mut self, record_id: String) -> Result<(), postgres::Error> {
+    pub fn remove_record(&mut self, item_id: String) -> Result<(), postgres::Error> {
         self.0
-            .execute("DELETE FROM album WHERE item_id = $1", &[&record_id])?;
+            .execute("DELETE FROM album WHERE item_id = $1", &[&item_id])?;
         Ok(())
     }
 
@@ -91,6 +92,7 @@ pub struct AlbumRecord {
     pub item_id: String,
     pub product_url: String,
     pub ts: i64,
+    pub portrait: bool,
     pub data: Vec<u8>,
 }
 
@@ -99,6 +101,8 @@ pub struct TelemetryRecord {
     pub ts: i64,
     pub item_id: Option<String>,
     pub product_url: Option<String>,
+    pub item_id_2: Option<String>,
+    pub product_url_2: Option<String>,
     pub chip_id: i32,
     pub uuid_number: Uuid,
     pub bat_voltage: i32,

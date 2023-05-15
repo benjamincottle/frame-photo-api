@@ -1,12 +1,21 @@
-use frame::database::{CONNECTION_POOL, AlbumRecord, TelemetryRecord};
+use frame::database::{AlbumRecord, TelemetryRecord, CONNECTION_POOL};
 
 use env_logger;
 use log;
 use serde::{Deserialize, Serialize};
+use std::{
+    env,
+    io::Read,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    process::exit,
+    str::FromStr,
+    sync::Arc,
+    thread,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tiny_http::{Request, Response, Server};
 use ureq::serde_json;
 use uuid::Uuid;
-use std::{env, sync::Arc, thread, time::{UNIX_EPOCH, SystemTime}, net::{SocketAddr, IpAddr, Ipv4Addr}, io::Read, str::FromStr, process::exit};
-use tiny_http::{Server, Response, Request};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct PostData {
@@ -98,7 +107,7 @@ fn main() {
     }
     if env::var_os("RUST_BACKTRACE").is_none() {
         env::set_var("RUST_BACKTRACE", "1");
-    }    
+    }
     env_logger::init();
     if env::var("API_KEY").is_err() || env::var("POSTGRES_CONNECTION_STRING").is_err() {
         log::error!("environment not configured");
@@ -151,36 +160,143 @@ fn main() {
                 Err(_) => panic!("SystemTime before UNIX EPOCH!"),
             };
             let mut dbclient = CONNECTION_POOL.get_client().unwrap();
-            let album_record = match dbclient
-            .0
-            .query("SELECT item_id, product_url, ts, data FROM album WHERE ts = (SELECT MIN(ts) from album) ORDER BY RANDOM() LIMIT 1", &[])
-            .and_then(|records| {
-                let row = records.get(0).unwrap();
-                let record = AlbumRecord {
-                    item_id: row.get(0),
-                    product_url: row.get(1),
-                    ts: row.get(2),
-                    data: row.get(3),
-                };
-                Ok(record)
-            })
-             {
-                Ok(record) => {
-                    record},
-                Err(e) => { 
-                    log::error!("could not get record: {}", e); 
-                    serve_error(request, tiny_http::StatusCode(500), "Internal server error"); 
-                    continue; 
-                }   
+
+            let album_records = match dbclient
+                .0
+                .query(
+                    "
+                WITH query_1 AS (
+                    UPDATE album
+                    SET ts = $1
+                    WHERE item_id = (
+                        SELECT item_id 
+                        FROM album 
+                        WHERE ts = (SELECT MIN(ts) FROM album) 
+                        ORDER BY RANDOM() 
+                        LIMIT 1
+                    )
+                    RETURNING item_id, portrait
+                ),
+                query_2 AS (
+                    UPDATE album
+                    SET ts = $1
+                    WHERE (SELECT portrait FROM query_1) = true AND
+                        item_id = (
+                            SELECT item_id 
+                            FROM album 
+                            WHERE item_id != (SELECT item_id FROM query_1) AND 
+                            portrait = true ORDER BY random() LIMIT 1
+                        )
+                    RETURNING item_id
+                )
+                SELECT item_id, product_url, ts, portrait, data
+                FROM album
+                WHERE item_id IN (
+                    SELECT item_id
+                    FROM query_1
+                    UNION
+                    SELECT item_id
+                    FROM query_2
+                )
+                ORDER BY random()
+                ",
+                    &[&ts],
+                )
+                .and_then(|records| {
+                    let mut album_records = Vec::new();
+                    for row in records.iter() {
+                        let record = AlbumRecord {
+                            item_id: row.get(0),
+                            product_url: row.get(1),
+                            ts: row.get(2),
+                            portrait: row.get(3),
+                            data: row.get(4),
+                        };
+                        album_records.push(record);
+                    }
+                    Ok(album_records)
+                }) {
+                Ok(records) => records,
+                Err(e) => {
+                    log::error!("could not get record: {}", e);
+                    serve_error(request, tiny_http::StatusCode(500), "Internal server error");
+                    continue;
+                }
             };
+
+            // let album_record = match dbclient
+            // .0
+            // .query("SELECT item_id, product_url, ts, portrait, data FROM album WHERE ts = (SELECT MIN(ts) from album) ORDER BY RANDOM() LIMIT 1", &[])
+            // .and_then(|records| {
+            //     let row = records.get(0).unwrap();
+            //     let record = AlbumRecord {
+            //         item_id: row.get(0),
+            //         product_url: row.get(1),
+            //         ts: row.get(2),
+            //         portrait: row.get(3),
+            //         data: row.get(4),
+            //     };
+            //     Ok(record)
+            // })
+            //  {
+            //     Ok(record) => {
+            //         record},
+            //     Err(e) => {
+            //         log::error!("could not get record: {}", e);
+            //         serve_error(request, tiny_http::StatusCode(500), "Internal server error");
+            //         continue;
+            //     }
+            // };
+
+            // Create a new vector of size 600x448, initialized with all zeros.
+            // Iterate over each row in the images (there are 448 rows).
+            // For each row, iterate over the columns of both images (300 columns each).
+            // For each pixel in the first image, copy its value into the corresponding position in the new vector (e.g., if the pixel is at row i and column j, copy it to row i and column j in the new vector).
+            // For each pixel in the second image, copy its value into the corresponding position in the new vector (e.g., if the pixel is at row i and column j in the second image, copy it to row i and column j + 300 in the new vector).
+            // Return the new vector.
+
+            let (data_to_send, item_id, product_url, item_id_2, product_url_2) =
+                match album_records.len() == 2 {
+                    true => {
+                        let w = 600 / 2;
+                        let h = 448;
+                        let xs1 = &album_records[0].data;
+                        let xs2 = &album_records[1].data;
+                        let mut xs: Vec<u8> = vec![0; w * h];
+                        for y in 0..h {
+                            for x in 0..(w / 2) {
+                                xs[y * w + x] = xs1[y * (w / 2) + x];
+                                xs[y * w + x + (w / 2)] = xs2[y * (w / 2) + x];
+                            }
+                        }
+
+                        (
+                            xs,
+                            Some(album_records[0].item_id.clone()),
+                            Some(album_records[0].product_url.clone()),
+                            Some(album_records[1].item_id.clone()),
+                            Some(album_records[1].product_url.clone()),
+                        )
+                    }
+                    false => (
+                        album_records[0].data.clone(),
+                        Some(album_records[0].item_id.clone()),
+                        Some(album_records[0].product_url.clone()),
+                        None,
+                        None,
+                    ),
+                };
+
             let mut buf = String::new();
             request.as_reader().read_to_string(&mut buf).unwrap();
             let log_documents: Vec<LogDoc> = serde_json::from_str(&buf).unwrap();
             for log_doc in &log_documents {
                 let record = TelemetryRecord {
                     ts,
-                    item_id: Some(album_record.item_id.to_string()),
-                    product_url: Some(album_record.product_url.to_string()),
+                    item_id: item_id.clone(),
+                    product_url: product_url.clone(),
+                    item_id_2: item_id_2.clone(),
+                    product_url_2: product_url_2.clone(),
                     chip_id: log_doc.chipID,
                     uuid_number: log_doc.uuidNumber,
                     bat_voltage: log_doc.batVoltage,
@@ -188,18 +304,20 @@ fn main() {
                     error_code: log_doc.errorCode,
                     return_code: log_doc.returnCode,
                     write_bytes: log_doc.writeBytes,
-                    remote_addr: vec!(request.remote_addr().unwrap().ip()),
+                    remote_addr: vec![request.remote_addr().unwrap().ip()],
                 };
                 let r = dbclient.0.execute(
                     "
-                    INSERT INTO telemetry (ts, item_id, product_url, chip_id, uuid_number, bat_voltage, boot_code, error_code, return_code, write_bytes, remote_addr) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    INSERT INTO telemetry (ts, item_id, product_url, item_id_2, product_url_2, chip_id, uuid_number, bat_voltage, boot_code, error_code, return_code, write_bytes, remote_addr) 
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     ON CONFLICT (uuid_number) 
-                    DO UPDATE SET error_code = $8, return_code = $9, write_bytes = $10, remote_addr = telemetry.remote_addr || $11", 
+                    DO UPDATE SET error_code = $10, return_code = $11, write_bytes = $12, remote_addr = telemetry.remote_addr || $13", 
                     &[
                         &record.ts,
                         &record.item_id,
                         &record.product_url,
+                        &record.item_id_2,
+                        &record.product_url_2,
                         &record.chip_id,
                         &record.uuid_number,
                         &record.bat_voltage,
@@ -211,18 +329,15 @@ fn main() {
                     ],
                 ).unwrap();
                 println!("{} rows affected", r);
-
             }
             CONNECTION_POOL.release_client(dbclient);
-            // let response = Response::from_data(album_record.data)
+            // let response = Response::from_data(data_to_send)
             // .with_header(tiny_http::Header::from_str("Content-Type: application/octet-stream").expect("This should never fail"),
             // );
-            
+
             let response = Response::from_string("Ok\n".to_string());
 
             dispatch_response(request, response);
-
-
         });
     }
     loop {
