@@ -336,7 +336,7 @@ fn main() {
                     write_bytes: log_doc.writeBytes,
                     remote_addr: vec![request.remote_addr().unwrap().ip()],
                 };
-                let r = dbclient.0.execute(
+                dbclient.0.execute(
                     "
                     INSERT INTO telemetry (ts, item_id, product_url, item_id_2, product_url_2, chip_id, uuid_number, bat_voltage, boot_code, error_code, return_code, write_bytes, remote_addr) 
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
