@@ -102,7 +102,6 @@ pub fn log_request(request: &tiny_http::Request, status: u16, size: usize) {
     );
 }
 
-// TODO: Config implementation
 fn main() {
     // for debugging purposes
     if env::var_os("RUST_LOG").is_none() {
@@ -111,6 +110,7 @@ fn main() {
     if env::var_os("RUST_BACKTRACE").is_none() {
         env::set_var("RUST_BACKTRACE", "1");
     }
+    dotenv::from_filename("secrets/.env").ok();
     env_logger::init();
     if env::var("API_KEY").is_err() || env::var("POSTGRES_CONNECTION_STRING").is_err() {
         log::error!("environment not configured");
