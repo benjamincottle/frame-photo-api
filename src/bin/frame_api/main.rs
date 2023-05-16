@@ -1,11 +1,9 @@
 use frame::database::{AlbumRecord, TelemetryRecord, CONNECTION_POOL};
 
 use env_logger;
-use image::DynamicImage;
 use log;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
     env,
     io::Read,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -21,15 +19,6 @@ use uuid::Uuid;
 
 const EPD_WIDTH: u32 = 600;
 const EPD_HEIGHT: u32 = 448;
-const PALETTE: [(u8, u8, u8); 7] = [
-    (0, 0, 0),       // Black
-    (255, 255, 255), // White
-    (0, 255, 0),     // Green
-    (0, 0, 255),     // Blue
-    (255, 0, 0),     // Red
-    (255, 255, 0),   // Yellow
-    (255, 128, 0),   // Orange
-];
 
 #[derive(Debug, Deserialize, Serialize)]
 struct PostData {
@@ -111,58 +100,6 @@ pub fn log_request(request: &tiny_http::Request, status: u16, size: usize) {
         "{} [{}] \"{} {} {}\" {} {} \"{}\" \"{}\"",
         remote_addr, date_time, method, uri, protocol, status, size, referer, user_agent
     );
-}
-
-pub fn decode_image(data: Vec<u8>) -> Result<DynamicImage, Box<dyn std::error::Error>> {
-    let map: HashMap<u8, (u8, u8, u8)> = PALETTE
-        .iter()
-        .enumerate()
-        .map(|(i, &rgb)| (i as u8, rgb))
-        .collect();
-    let (nwidth, nheight, w, h) = match data.len() == (EPD_WIDTH * EPD_HEIGHT / 2) as usize {
-        true => (
-            EPD_WIDTH,
-            EPD_HEIGHT,
-            EPD_WIDTH as usize,
-            EPD_HEIGHT as usize,
-        ),
-        false => (
-            (EPD_WIDTH / 2),
-            EPD_HEIGHT,
-            (EPD_WIDTH / 2) as usize,
-            EPD_HEIGHT as usize,
-        ),
-    };
-    let mut pixels: Vec<u8> = Vec::with_capacity(3 * w * h / 2);
-    let mut buf: Vec<u8> = Vec::with_capacity(2);
-    for byte in data {
-        let p1 = byte >> 4;
-        let p2 = byte & 0x0F;
-        buf.push(p1);
-        buf.push(p2);
-        if buf.len() == 2 {
-            let p1 = map[&buf[0]];
-            let p2 = map[&buf[1]];
-            pixels.push(p1.0);
-            pixels.push(p1.1);
-            pixels.push(p1.2);
-            pixels.push(p2.0);
-            pixels.push(p2.1);
-            pixels.push(p2.2);
-            buf = Vec::with_capacity(2);
-        }
-    }
-    let image_buf = image::ImageBuffer::from_raw(nwidth, nheight, pixels);
-    let dimage = match image_buf {
-        Some(buf) => DynamicImage::ImageRgb8(buf),
-        None => {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "(decode_image) Invalid image data image_buf is None",
-            )));
-        }
-    };
-    Ok(dimage)
 }
 
 // TODO: Config implementation
@@ -377,16 +314,9 @@ fn main() {
                 ).unwrap();
             }
             CONNECTION_POOL.release_client(dbclient);
-
-            let xx = decode_image(data).unwrap();
-            xx.save("public/test.jpg").unwrap();
-
-            // let response = Response::from_data(data)
-            // .with_header(tiny_http::Header::from_str("Content-Type: application/octet-stream").expect("This should never fail"),
-            // );
-
-            let response = Response::from_string("Ok\n".to_string());
-
+            let response = Response::from_data(data)
+            .with_header(tiny_http::Header::from_str("Content-Type: application/octet-stream").expect("This should never fail"),
+            );
             dispatch_response(request, response);
         });
     }
