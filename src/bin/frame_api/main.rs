@@ -5,6 +5,7 @@ use image::DynamicImage;
 use log;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     env,
     io::Read,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -12,7 +13,7 @@ use std::{
     str::FromStr,
     sync::Arc,
     thread,
-    time::{SystemTime, UNIX_EPOCH}, collections::HashMap,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tiny_http::{Request, Response, Server};
 use ureq::serde_json;
@@ -248,7 +249,7 @@ fn main() {
                         item_id = (
                             SELECT item_id 
                             FROM album 
-                            WHERE item_id != (SELECT item_id FROM query_1) AND 
+                            WHERE item_id != (SELECT item_id FROM query_1) AND
                             portrait = true ORDER BY random() LIMIT 1
                         )
                     RETURNING item_id
@@ -287,36 +288,52 @@ fn main() {
                     continue;
                 }
             };
-            let (data_to_send, item_id, product_url, item_id_2, product_url_2) =
-                match album_records.len() == 2 {
-                    true => {
-                        let w = 600 / 2; // 2 pixels are packed per byte
-                        let h = 448;
-                        let xs1 = &album_records[0].data;
-                        let xs2 = &album_records[1].data;
-                        let mut xs: Vec<u8> = vec![0; w * h];
-                        for y in 0..h {
-                            for x in 0..(w / 2) {
-                                xs[y * w + x] = xs1[y * (w / 2) + x];
-                                xs[y * w + x + (w / 2)] = xs2[y * (w / 2) + x];
+            let data = match album_records.iter().filter(|r| r.portrait).count() {
+                0 => album_records[0].data.clone(),
+                count => {
+                    let w = EPD_WIDTH as usize / 2; // 2 pixels are packed per byte
+                    let h = EPD_HEIGHT as usize;
+                    let xs1 = &album_records[0].data;
+                    let xs2: &Vec<u8> = &Vec::new();
+                    let xs2 = match count {
+                        1 => xs2,
+                        2 => &album_records[1].data,
+                        _ => unreachable!(),
+                    };
+                    let offset = match count {
+                        1 => w / 4,
+                        2 => w / 2,
+                        _ => unreachable!(),
+                    };
+                    let mut xs: Vec<u8> = vec![0b00010001; w * h]; // 0b00010001 = white
+                    for y in 0..h {
+                        for x in 0..(w / 2) {
+                            let i = y * (w / 2) + x;
+                            if (x == 0) & (count == 2) {
+                                xs[y * w + x] = xs1[i];
+                                xs[y * w + x + offset] = (1 << 4) | (0b00001111 & xs2[i]); // 1 = white
+                            } else if (x == (w / 2 - 1)) & (count == 2) {
+                                xs[y * w + x] = (1 << 0) | (0b11110000 & xs1[i]); // 1 = white
+                                xs[y * w + x + offset] = xs2[i];
+                            } else if count == 2 {
+                                xs[y * w + x] = xs1[i];
+                                xs[y * w + x + offset] = xs2[i];
+                            } else if count == 1 {
+                                xs[y * w + x + offset] = xs1[i];
                             }
                         }
-                        (
-                            xs,
-                            Some(album_records[0].item_id.clone()),
-                            Some(album_records[0].product_url.clone()),
-                            Some(album_records[1].item_id.clone()),
-                            Some(album_records[1].product_url.clone()),
-                        )
                     }
-                    false => (
-                        album_records[0].data.clone(),
-                        Some(album_records[0].item_id.clone()),
-                        Some(album_records[0].product_url.clone()),
-                        None,
-                        None,
-                    ),
-                };
+                    xs
+                }
+            };
+            let item_id = Some(album_records[0].item_id.to_string());
+            let product_url = Some(album_records[0].product_url.to_string());
+            let mut item_id_2 = None;
+            let mut product_url_2 = None;
+            if album_records.iter().filter(|r| r.portrait).count() == 2 {
+                item_id_2 = Some(album_records[1].item_id.to_string());
+                product_url_2 = Some(album_records[1].product_url.to_string());
+            }
             let mut buf = String::new();
             request.as_reader().read_to_string(&mut buf).unwrap();
             let log_documents: Vec<LogDoc> = serde_json::from_str(&buf).unwrap();
@@ -361,11 +378,10 @@ fn main() {
             }
             CONNECTION_POOL.release_client(dbclient);
 
-            let xx = decode_image(data_to_send).unwrap();
+            let xx = decode_image(data).unwrap();
             xx.save("public/test.jpg").unwrap();
 
-
-            // let response = Response::from_data(data_to_send)
+            // let response = Response::from_data(data)
             // .with_header(tiny_http::Header::from_str("Content-Type: application/octet-stream").expect("This should never fail"),
             // );
 
