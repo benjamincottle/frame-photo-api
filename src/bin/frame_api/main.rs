@@ -162,7 +162,15 @@ fn main() {
                 Ok(duration) => duration.as_secs() as i64,
                 Err(_) => panic!("SystemTime before UNIX EPOCH!"),
             };
-            let mut dbclient = CONNECTION_POOL.get_client().unwrap();
+
+            let mut dbclient = match CONNECTION_POOL.get_client() {
+                Ok(dbclient) => dbclient,
+                Err(err) => {
+                    log::error!("(main): {err}");
+                    serve_error(request, tiny_http::StatusCode(500), "Internal server error");
+                    continue;
+                }
+            };
             let album_records = match dbclient
                 .0
                 .query(
@@ -272,8 +280,12 @@ fn main() {
                 product_url_2 = Some(album_records[1].product_url.to_string());
             }
             let mut buf = String::new();
-            request.as_reader().read_to_string(&mut buf).unwrap();
-            let log_documents: Vec<LogDoc> = serde_json::from_str(&buf).unwrap();
+            request
+                .as_reader()
+                .read_to_string(&mut buf)
+                .expect("request data should be valid utf-8");
+            let log_documents: Vec<LogDoc> =
+                serde_json::from_str(&buf).expect("couldn't deserialize log_documents");
             for log_doc in &log_documents {
                 let record = TelemetryRecord {
                     ts,
@@ -288,7 +300,10 @@ fn main() {
                     error_code: log_doc.errorCode,
                     return_code: log_doc.returnCode,
                     write_bytes: log_doc.writeBytes,
-                    remote_addr: vec![request.remote_addr().unwrap().ip()],
+                    remote_addr: vec![request
+                        .remote_addr()
+                        .expect("always some for tcp listeners")
+                        .ip()],
                 };
                 dbclient.0.execute(
                     "
@@ -311,11 +326,12 @@ fn main() {
                         &record.write_bytes,
                         &record.remote_addr,
                     ],
-                ).unwrap();
+                ).expect("unable to insert telemetry record");
             }
             CONNECTION_POOL.release_client(dbclient);
-            let response = Response::from_data(data)
-            .with_header(tiny_http::Header::from_str("Content-Type: application/octet-stream").expect("This should never fail"),
+            let response = Response::from_data(data).with_header(
+                tiny_http::Header::from_str("Content-Type: application/octet-stream")
+                    .expect("This should never fail"),
             );
             dispatch_response(request, response);
         });
