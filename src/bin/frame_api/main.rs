@@ -1,12 +1,24 @@
-use frame::database::{CONNECTION_POOL, AlbumRecord, TelemetryRecord};
+use frame::database::{AlbumRecord, TelemetryRecord, CONNECTION_POOL};
 
 use env_logger;
 use log;
 use serde::{Deserialize, Serialize};
+use std::{
+    env,
+    io::Read,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    process::exit,
+    str::FromStr,
+    sync::Arc,
+    thread,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tiny_http::{Request, Response, Server};
 use ureq::serde_json;
 use uuid::Uuid;
-use std::{env, sync::Arc, thread, time::{UNIX_EPOCH, SystemTime}, net::{SocketAddr, IpAddr, Ipv4Addr}, io::Read, str::FromStr, process::exit};
-use tiny_http::{Server, Response, Request};
+
+const EPD_WIDTH: u32 = 600;
+const EPD_HEIGHT: u32 = 448;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct PostData {
@@ -40,6 +52,18 @@ where
                 .expect("This should never fail"),
         );
     }
+    response.add_header(
+        tiny_http::Header::from_str("Access-Control-Allow-Origin: *")
+            .expect("This should never fail"),
+    );
+    response.add_header(
+        tiny_http::Header::from_str("Access-Control-Allow-Methods: OPTIONS, POST")
+            .expect("This should never fail"),
+    );
+    response.add_header(
+        tiny_http::Header::from_str("Access-Control-Allow-Headers: Content-Type, API_KEY")
+            .expect("This should never fail"),
+    );
     log_request(
         &request,
         response.status_code().0,
@@ -50,7 +74,7 @@ where
     }
 }
 
-pub fn serve_error(request: Request, status_code: tiny_http::StatusCode, message: &str) {
+fn serve_error(request: Request, status_code: tiny_http::StatusCode, message: &str) {
     let response = Response::new(
         status_code,
         vec![],
@@ -61,7 +85,7 @@ pub fn serve_error(request: Request, status_code: tiny_http::StatusCode, message
     dispatch_response(request, response);
 }
 
-pub fn log_request(request: &tiny_http::Request, status: u16, size: usize) {
+fn log_request(request: &tiny_http::Request, status: u16, size: usize) {
     let remote_addr = request
         .remote_addr()
         .unwrap_or(&SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0))
@@ -90,7 +114,6 @@ pub fn log_request(request: &tiny_http::Request, status: u16, size: usize) {
     );
 }
 
-// TODO: Config implementation
 fn main() {
     // for debugging purposes
     if env::var_os("RUST_LOG").is_none() {
@@ -98,7 +121,8 @@ fn main() {
     }
     if env::var_os("RUST_BACKTRACE").is_none() {
         env::set_var("RUST_BACKTRACE", "1");
-    }    
+    }
+    dotenv::from_filename("secrets/.env").ok();
     env_logger::init();
     if env::var("API_KEY").is_err() || env::var("POSTGRES_CONNECTION_STRING").is_err() {
         log::error!("environment not configured");
@@ -129,6 +153,10 @@ fn main() {
                     continue;
                 }
             };
+            if request.method().as_str() == "OPTIONS" {
+                dispatch_response(request, Response::new_empty(tiny_http::StatusCode(204)));
+                continue;
+            }
             if request.method().as_str() != "POST" {
                 serve_error(request, tiny_http::StatusCode(405), "Method not allowed");
                 continue;
@@ -150,37 +178,138 @@ fn main() {
                 Ok(duration) => duration.as_secs() as i64,
                 Err(_) => panic!("SystemTime before UNIX EPOCH!"),
             };
-            let mut dbclient = CONNECTION_POOL.get_client().unwrap();
-            let album_record = match dbclient
-            .0
-            .query("SELECT item_id, product_url, ts, data FROM album WHERE ts = (SELECT MIN(ts) from album) ORDER BY RANDOM() LIMIT 1", &[])
-            .and_then(|records| {
-                let row = records.get(0).unwrap();
-                let record = AlbumRecord {
-                    item_id: row.get(0),
-                    product_url: row.get(1),
-                    ts: row.get(2),
-                    data: row.get(3),
-                };
-                Ok(record)
-            })
-             {
-                Ok(record) => {
-                    record},
-                Err(e) => { 
-                    log::error!("could not get record: {}", e); 
-                    serve_error(request, tiny_http::StatusCode(500), "Internal server error"); 
-                    continue; 
-                }   
+
+            let mut dbclient = match CONNECTION_POOL.get_client() {
+                Ok(dbclient) => dbclient,
+                Err(err) => {
+                    log::error!("(main): {err}");
+                    serve_error(request, tiny_http::StatusCode(500), "Internal server error");
+                    continue;
+                }
             };
+            let album_records = match dbclient
+                .0
+                .query(
+                    "
+                WITH query_1 AS (
+                    UPDATE album
+                    SET ts = $1
+                    WHERE item_id = (
+                        SELECT item_id 
+                        FROM album 
+                        WHERE ts = (SELECT MIN(ts) FROM album) 
+                        ORDER BY RANDOM() 
+                        LIMIT 1
+                    )
+                    RETURNING item_id, portrait
+                ),
+                query_2 AS (
+                    UPDATE album
+                    SET ts = $1
+                    WHERE (SELECT portrait FROM query_1) = true AND
+                        item_id = (
+                            SELECT item_id 
+                            FROM album 
+                            WHERE item_id != (SELECT item_id FROM query_1) AND
+                            portrait = true ORDER BY random() LIMIT 1
+                        )
+                    RETURNING item_id
+                )
+                SELECT item_id, product_url, ts, portrait, data
+                FROM album
+                WHERE item_id IN (
+                    SELECT item_id
+                    FROM query_1
+                    UNION
+                    SELECT item_id
+                    FROM query_2
+                )
+                ORDER BY random()
+                ",
+                    &[&ts],
+                )
+                .and_then(|records| {
+                    let mut album_records = Vec::new();
+                    for row in records.iter() {
+                        let record = AlbumRecord {
+                            item_id: row.get(0),
+                            product_url: row.get(1),
+                            ts: row.get(2),
+                            portrait: row.get(3),
+                            data: row.get(4),
+                        };
+                        album_records.push(record);
+                    }
+                    Ok(album_records)
+                }) {
+                Ok(records) => records,
+                Err(e) => {
+                    log::error!("could not get record(s): {}", e);
+                    serve_error(request, tiny_http::StatusCode(500), "Internal server error");
+                    continue;
+                }
+            };
+            let data = match album_records.iter().filter(|r| r.portrait).count() {
+                0 => album_records[0].data.clone(),
+                count => {
+                    let w = EPD_WIDTH as usize / 2; // 2 pixels are packed per byte
+                    let h = EPD_HEIGHT as usize;
+                    let xs1 = &album_records[0].data;
+                    let xs2: &Vec<u8> = &Vec::new();
+                    let xs2 = match count {
+                        1 => xs2,
+                        2 => &album_records[1].data,
+                        _ => unreachable!(),
+                    };
+                    let offset = match count {
+                        1 => w / 4,
+                        2 => w / 2,
+                        _ => unreachable!(),
+                    };
+                    let mut xs: Vec<u8> = vec![0b00010001; w * h]; // 0b00010001 = white
+                    for y in 0..h {
+                        for x in 0..(w / 2) {
+                            let i = y * (w / 2) + x;
+                            if (x == 0) & (count == 2) {
+                                xs[y * w + x] = xs1[i];
+                                xs[y * w + x + offset] = (1 << 4) | (0b00001111 & xs2[i]);
+                            // 1 = white
+                            } else if (x == (w / 2 - 1)) & (count == 2) {
+                                xs[y * w + x] = (1 << 0) | (0b11110000 & xs1[i]); // 1 = white
+                                xs[y * w + x + offset] = xs2[i];
+                            } else if count == 2 {
+                                xs[y * w + x] = xs1[i];
+                                xs[y * w + x + offset] = xs2[i];
+                            } else if count == 1 {
+                                xs[y * w + x + offset] = xs1[i];
+                            }
+                        }
+                    }
+                    xs
+                }
+            };
+            let item_id = Some(album_records[0].item_id.to_string());
+            let product_url = Some(album_records[0].product_url.to_string());
+            let mut item_id_2 = None;
+            let mut product_url_2 = None;
+            if album_records.iter().filter(|r| r.portrait).count() == 2 {
+                item_id_2 = Some(album_records[1].item_id.to_string());
+                product_url_2 = Some(album_records[1].product_url.to_string());
+            }
             let mut buf = String::new();
-            request.as_reader().read_to_string(&mut buf).unwrap();
-            let log_documents: Vec<LogDoc> = serde_json::from_str(&buf).unwrap();
+            request
+                .as_reader()
+                .read_to_string(&mut buf)
+                .expect("request data should be valid utf-8");
+            let log_documents: Vec<LogDoc> =
+                serde_json::from_str(&buf).expect("couldn't deserialize log_documents");
             for log_doc in &log_documents {
                 let record = TelemetryRecord {
                     ts,
-                    item_id: Some(album_record.item_id.to_string()),
-                    product_url: Some(album_record.product_url.to_string()),
+                    item_id: item_id.clone(),
+                    product_url: product_url.clone(),
+                    item_id_2: item_id_2.clone(),
+                    product_url_2: product_url_2.clone(),
                     chip_id: log_doc.chipID,
                     uuid_number: log_doc.uuidNumber,
                     bat_voltage: log_doc.batVoltage,
@@ -188,19 +317,23 @@ fn main() {
                     error_code: log_doc.errorCode,
                     return_code: log_doc.returnCode,
                     write_bytes: log_doc.writeBytes,
-                    remote_addr: vec!(request.remote_addr().unwrap().ip()),
+                    remote_addr: vec![request
+                        .remote_addr()
+                        .expect("always some for tcp listeners")
+                        .ip()],
                 };
-                // println!("{:?}", record);
-                let r = dbclient.0.execute(
+                dbclient.0.execute(
                     "
-                    INSERT INTO telemetry (ts, item_id, product_url, chip_id, uuid_number, bat_voltage, boot_code, error_code, return_code, write_bytes, remote_addr) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    INSERT INTO telemetry (ts, item_id, product_url, item_id_2, product_url_2, chip_id, uuid_number, bat_voltage, boot_code, error_code, return_code, write_bytes, remote_addr) 
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     ON CONFLICT (uuid_number) 
-                    DO UPDATE SET error_code = $8, return_code = $9, write_bytes = $10, remote_addr = telemetry.remote_addr || $11", 
+                    DO UPDATE SET error_code = $10, return_code = $11, write_bytes = $12, remote_addr = telemetry.remote_addr || $13", 
                     &[
                         &record.ts,
                         &record.item_id,
                         &record.product_url,
+                        &record.item_id_2,
+                        &record.product_url_2,
                         &record.chip_id,
                         &record.uuid_number,
                         &record.bat_voltage,
@@ -210,20 +343,14 @@ fn main() {
                         &record.write_bytes,
                         &record.remote_addr,
                     ],
-                ).unwrap();
-                println!("{} rows affected", r);
-
+                ).expect("unable to insert telemetry record");
             }
             CONNECTION_POOL.release_client(dbclient);
-            let response = Response::from_string("Ok".to_string());
-            // let response = Response::from_data(album_record.data)
-            // .with_header(tiny_http::Header::from_str("Content-Type: application/octet-stream").expect("This should never fail"),
-            // );
-            log_request(&request, 200, response.data_length().unwrap_or(0));
-            if let Err(e) = request.respond(response) {
-                log::error!("Could not send response: {}", e);
-            }
-
+            let response = Response::from_data(data).with_header(
+                tiny_http::Header::from_str("Content-Type: application/octet-stream")
+                    .expect("This should never fail"),
+            );
+            dispatch_response(request, response);
         });
     }
     loop {
