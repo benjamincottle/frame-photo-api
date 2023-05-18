@@ -52,6 +52,18 @@ where
                 .expect("This should never fail"),
         );
     }
+    response.add_header(
+        tiny_http::Header::from_str("Access-Control-Allow-Origin: *")
+            .expect("This should never fail"),
+    );
+    response.add_header(
+        tiny_http::Header::from_str("Access-Control-Allow-Methods: OPTIONS, POST")
+            .expect("This should never fail"),
+    );
+    response.add_header(
+        tiny_http::Header::from_str("Access-Control-Allow-Headers: Content-Type, API_KEY")
+            .expect("This should never fail"),
+    );
     log_request(
         &request,
         response.status_code().0,
@@ -62,7 +74,7 @@ where
     }
 }
 
-pub fn serve_error(request: Request, status_code: tiny_http::StatusCode, message: &str) {
+fn serve_error(request: Request, status_code: tiny_http::StatusCode, message: &str) {
     let response = Response::new(
         status_code,
         vec![],
@@ -73,7 +85,7 @@ pub fn serve_error(request: Request, status_code: tiny_http::StatusCode, message
     dispatch_response(request, response);
 }
 
-pub fn log_request(request: &tiny_http::Request, status: u16, size: usize) {
+fn log_request(request: &tiny_http::Request, status: u16, size: usize) {
     let remote_addr = request
         .remote_addr()
         .unwrap_or(&SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0))
@@ -141,6 +153,10 @@ fn main() {
                     continue;
                 }
             };
+            if request.method().as_str() == "OPTIONS" {
+                dispatch_response(request, Response::new_empty(tiny_http::StatusCode(204)));
+                continue;
+            }
             if request.method().as_str() != "POST" {
                 serve_error(request, tiny_http::StatusCode(405), "Method not allowed");
                 continue;
@@ -256,7 +272,8 @@ fn main() {
                             let i = y * (w / 2) + x;
                             if (x == 0) & (count == 2) {
                                 xs[y * w + x] = xs1[i];
-                                xs[y * w + x + offset] = (1 << 4) | (0b00001111 & xs2[i]); // 1 = white
+                                xs[y * w + x + offset] = (1 << 4) | (0b00001111 & xs2[i]);
+                            // 1 = white
                             } else if (x == (w / 2 - 1)) & (count == 2) {
                                 xs[y * w + x] = (1 << 0) | (0b11110000 & xs1[i]); // 1 = white
                                 xs[y * w + x + offset] = xs2[i];
