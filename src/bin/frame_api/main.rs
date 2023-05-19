@@ -1,4 +1,4 @@
-use frame::database::{AlbumRecord, TelemetryRecord, CONNECTION_POOL};
+use frame::database::CONNECTION_POOL;
 
 use env_logger;
 use log;
@@ -19,6 +19,32 @@ use uuid::Uuid;
 
 const EPD_WIDTH: u32 = 600;
 const EPD_HEIGHT: u32 = 448;
+
+#[allow(dead_code)]
+struct AlbumRecord {
+    item_id: String,
+    product_url: String,
+    ts: i64,
+    portrait: bool,
+    data: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TelemetryRecord {
+    ts: i64,
+    item_id: Option<String>,
+    product_url: Option<String>,
+    item_id_2: Option<String>,
+    product_url_2: Option<String>,
+    chip_id: i32,
+    uuid_number: Uuid,
+    bat_voltage: i32,
+    boot_code: i32,
+    error_code: i32,
+    return_code: Option<i32>,
+    write_bytes: Option<i32>,
+    remote_addr: Vec<IpAddr>,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 struct PostData {
@@ -190,7 +216,6 @@ fn main() {
                 }
             };
             let album_records = match dbclient
-                .0
                 .query(
                     "WITH query_1 AS (
                     UPDATE album
@@ -321,7 +346,7 @@ fn main() {
                         .expect("always some for tcp listeners")
                         .ip()],
                 };
-                dbclient.0.execute(
+                dbclient.execute(
                     "
                     INSERT INTO telemetry (ts, item_id, product_url, item_id_2, product_url_2, chip_id, uuid_number, bat_voltage, boot_code, error_code, return_code, write_bytes, remote_addr) 
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
