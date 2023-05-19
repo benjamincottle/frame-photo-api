@@ -61,7 +61,7 @@ where
             .expect("This should never fail"),
     );
     response.add_header(
-        tiny_http::Header::from_str("Access-Control-Allow-Headers: Content-Type, API_KEY")
+        tiny_http::Header::from_str("Access-Control-Allow-Headers: Content-Type, Authorization")
             .expect("This should never fail"),
     );
     log_request(
@@ -161,10 +161,13 @@ fn main() {
                 serve_error(request, tiny_http::StatusCode(405), "Method not allowed");
                 continue;
             }
-            let api_key = request.headers().iter().find(|h| h.field.equiv("API_KEY"));
+            let api_key = request
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("Authorization"))
+                .and_then(|h| Some(h.value.to_string().split_off(7)));
             if api_key.is_none()
-                || api_key.expect("previously validated").value
-                    != env::var("API_KEY").expect("previously validated")
+                || api_key != Some(env::var("API_KEY").expect("previously validated"))
             {
                 serve_error(request, tiny_http::StatusCode(401), "Unauthorized");
                 continue;
@@ -178,7 +181,6 @@ fn main() {
                 Ok(duration) => duration.as_secs() as i64,
                 Err(_) => panic!("SystemTime before UNIX EPOCH!"),
             };
-
             let mut dbclient = match CONNECTION_POOL.get_client() {
                 Ok(dbclient) => dbclient,
                 Err(err) => {
@@ -190,8 +192,7 @@ fn main() {
             let album_records = match dbclient
                 .0
                 .query(
-                    "
-                WITH query_1 AS (
+                    "WITH query_1 AS (
                     UPDATE album
                     SET ts = $1
                     WHERE item_id = (
@@ -224,8 +225,7 @@ fn main() {
                     SELECT item_id
                     FROM query_2
                 )
-                ORDER BY random()
-                ",
+                ORDER BY random()",
                     &[&ts],
                 )
                 .and_then(|records| {
@@ -273,7 +273,6 @@ fn main() {
                             if (x == 0) & (count == 2) {
                                 xs[y * w + x] = xs1[i];
                                 xs[y * w + x + offset] = (1 << 4) | (0b00001111 & xs2[i]);
-                            // 1 = white
                             } else if (x == (w / 2 - 1)) & (count == 2) {
                                 xs[y * w + x] = (1 << 0) | (0b11110000 & xs1[i]); // 1 = white
                                 xs[y * w + x + offset] = xs2[i];
