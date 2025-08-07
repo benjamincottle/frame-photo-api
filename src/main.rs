@@ -1,9 +1,7 @@
 use lazy_static::lazy_static;
 use postgres::{Client, NoTls};
-use std::{collections::VecDeque, sync::Mutex};
-use env_logger;
-use log;
 use serde::{Deserialize, Serialize};
+use std::{collections::VecDeque, sync::Mutex};
 use std::{
     env,
     io::Read,
@@ -16,7 +14,6 @@ use std::{
 };
 use tiny_http::{Request, Response, Server};
 use ureq::serde_json;
-use uuid::Uuid;
 
 lazy_static! {
     pub static ref CONNECTION_POOL: Mutex<VecDeque<Client>> = {
@@ -44,14 +41,12 @@ impl CONNECTION_POOL {
     pub fn get_client(&self) -> Result<Client, std::io::Error> {
         let mut pool = self.lock().unwrap();
         match pool.pop_front() {
-            Some(client) => return Ok(client),
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "connection pool is exhausted",
-                ))
-            }
-        };
+            Some(client) => Ok(client),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "connection pool is exhausted",
+            )),
+        }
     }
 
     pub fn release_client(&self, client: Client) {
@@ -79,13 +74,8 @@ struct TelemetryRecord {
     product_url: Option<String>,
     item_id_2: Option<String>,
     product_url_2: Option<String>,
-    chip_id: i32,
-    uuid_number: Uuid,
     bat_voltage: i32,
     boot_code: i32,
-    error_code: i32,
-    return_code: Option<i32>,
-    write_bytes: Option<i32>,
     remote_addr: Vec<IpAddr>,
 }
 
@@ -95,26 +85,20 @@ struct PostData {
 }
 
 #[allow(non_snake_case)]
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 struct LogDoc {
-    chipID: i32,
-    uuidNumber: Uuid,
     bootCode: i32,
     batVoltage: i32,
-    returnCode: Option<i32>,
-    writeBytes: Option<i32>,
-    errorCode: i32,
 }
 
 fn dispatch_response<R>(request: Request, mut response: Response<R>)
 where
     R: Read,
 {
-    if response
+    if !response
         .headers()
         .iter()
-        .find(|header| header.field.equiv("Content-Type"))
-        .is_none()
+        .any(|header| header.field.equiv("Content-Type"))
     {
         response = response.with_header(
             tiny_http::Header::from_str("Content-Type: text/html; charset=UTF-8")
@@ -126,11 +110,18 @@ where
             .expect("This should never fail"),
     );
     response.add_header(
-        tiny_http::Header::from_str("Access-Control-Allow-Methods: OPTIONS, POST")
+        tiny_http::Header::from_str("Access-Control-Allow-Methods: OPTIONS, GET")
             .expect("This should never fail"),
     );
     response.add_header(
-        tiny_http::Header::from_str("Access-Control-Allow-Headers: Content-Type, Authorization")
+        tiny_http::Header::from_str(
+            "Access-Control-Allow-Headers: Content-Type, Authorization, Data",
+        )
+        .expect("This should never fail"),
+    );
+    let content_length = response.data_length().expect("This should not fail");
+    response.add_header(
+        tiny_http::Header::from_str(&format!("Content-Length: {}", content_length))
             .expect("This should never fail"),
     );
     log_request(
@@ -163,8 +154,6 @@ fn log_request(request: &tiny_http::Request, status: u16, size: usize) {
     let method = request.method();
     let uri = request.url();
     let protocol = request.http_version();
-    let status = status;
-    let size = size;
     let referer = request
         .headers()
         .iter()
@@ -191,7 +180,7 @@ fn main() {
     if env::var_os("RUST_BACKTRACE").is_none() {
         env::set_var("RUST_BACKTRACE", "1");
     }
-    dotenv::from_filename("secrets/.env").ok();
+    // dotenv::from_filename("secrets/.env").ok(); // used in dev only
     env_logger::init();
     if env::var("API_KEY").is_err() || env::var("POSTGRES_CONNECTION_STRING").is_err() {
         log::error!("environment not configured");
@@ -204,18 +193,15 @@ fn main() {
     );
     let database_url = &env::var("POSTGRES_CONNECTION_STRING").expect("previously validated");
     let pool_size = 2;
-    match CONNECTION_POOL.initialise(database_url, pool_size) {
-        Err(e) => {
-            log::error!("failed to initialise connection pool: {:?}", e);
-            exit(1);
-        }
-        _ => {}
+    if let Err(e) = CONNECTION_POOL.initialise(database_url, pool_size) {
+        log::error!("failed to initialise connection pool: {:?}", e);
+        exit(1);
     };
     let server = Arc::new(server);
     for _ in 0..2 {
         let server = server.clone();
         thread::spawn(move || loop {
-            let mut request = match server.recv() {
+            let request = match server.recv() {
                 Ok(r) => r,
                 Err(e) => {
                     log::error!("could not receive request: {}", e);
@@ -226,7 +212,7 @@ fn main() {
                 dispatch_response(request, Response::new_empty(tiny_http::StatusCode(204)));
                 continue;
             }
-            if request.method().as_str() != "POST" {
+            if request.method().as_str() != "GET" {
                 serve_error(request, tiny_http::StatusCode(405), "Method not allowed");
                 continue;
             }
@@ -234,14 +220,14 @@ fn main() {
                 .headers()
                 .iter()
                 .find(|h| h.field.equiv("Authorization"))
-                .and_then(|h| Some(h.value.to_string().split_off(7)));
+                .map(|h| h.value.to_string().split_off(7));
             if api_key.is_none()
                 || api_key != Some(env::var("API_KEY").expect("previously validated"))
             {
                 serve_error(request, tiny_http::StatusCode(401), "Unauthorized");
                 continue;
             }
-            if request.url().trim_end_matches("/") != "/frame" {
+            if request.url().trim_end_matches('/') != "/frame" {
                 serve_error(request, tiny_http::StatusCode(404), "Not found");
                 continue;
             }
@@ -296,7 +282,7 @@ fn main() {
                 ORDER BY random()",
                     &[&ts],
                 )
-                .and_then(|records| {
+                .map(|records| {
                     let mut album_records = Vec::new();
                     for row in records.iter() {
                         let record = AlbumRecord {
@@ -308,7 +294,7 @@ fn main() {
                         };
                         album_records.push(record);
                     }
-                    Ok(album_records)
+                    album_records
                 }) {
                 Ok(records) => records,
                 Err(e) => {
@@ -363,60 +349,47 @@ fn main() {
                 item_id_2 = Some(album_records[1].item_id.to_string());
                 product_url_2 = Some(album_records[1].product_url.to_string());
             }
-            let mut buf = String::new();
-            request
-                .as_reader()
-                .read_to_string(&mut buf)
-                .expect("request data should be valid utf-8");
-            let log_documents: Vec<LogDoc> =
-                serde_json::from_str(&buf).expect("couldn't deserialize log_documents");
-            for log_doc in &log_documents {
-                let record = TelemetryRecord {
-                    ts,
-                    item_id: item_id.clone(),
-                    product_url: product_url.clone(),
-                    item_id_2: item_id_2.clone(),
-                    product_url_2: product_url_2.clone(),
-                    chip_id: log_doc.chipID,
-                    uuid_number: log_doc.uuidNumber,
-                    bat_voltage: log_doc.batVoltage,
-                    boot_code: log_doc.bootCode,
-                    error_code: log_doc.errorCode,
-                    return_code: log_doc.returnCode,
-                    write_bytes: log_doc.writeBytes,
-                    remote_addr: vec![request
-                        .remote_addr()
-                        .expect("always some for tcp listeners")
-                        .ip()],
-                };
-                dbclient.execute(
+            let uploaded_data: LogDoc = request
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("Data"))
+                .map(|h| serde_json::from_str(h.value.as_ref()).unwrap_or_default())
+                .unwrap_or_default();
+            let record = TelemetryRecord {
+                ts,
+                item_id: item_id.clone(),
+                product_url: product_url.clone(),
+                item_id_2: item_id_2.clone(),
+                product_url_2: product_url_2.clone(),
+                bat_voltage: uploaded_data.batVoltage,
+                boot_code: uploaded_data.bootCode,
+                remote_addr: vec![request
+                    .remote_addr()
+                    .expect("always some for tcp listeners")
+                    .ip()],
+            };
+            dbclient.execute(
                     "
-                    INSERT INTO telemetry (ts, item_id, product_url, item_id_2, product_url_2, chip_id, uuid_number, bat_voltage, boot_code, error_code, return_code, write_bytes, remote_addr) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                    ON CONFLICT (uuid_number) 
-                    DO UPDATE SET error_code = $10, return_code = $11, write_bytes = $12, remote_addr = telemetry.remote_addr || $13", 
+                    INSERT INTO telemetry (ts, item_id, product_url, item_id_2, product_url_2, bat_voltage, boot_code, remote_addr) 
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", 
                     &[
                         &record.ts,
                         &record.item_id,
                         &record.product_url,
                         &record.item_id_2,
                         &record.product_url_2,
-                        &record.chip_id,
-                        &record.uuid_number,
                         &record.bat_voltage,
                         &record.boot_code,
-                        &record.error_code,
-                        &record.return_code,
-                        &record.write_bytes,
                         &record.remote_addr,
                     ],
                 ).expect("unable to insert telemetry record");
-            }
             CONNECTION_POOL.release_client(dbclient);
-            let response = Response::from_data(data).with_header(
-                tiny_http::Header::from_str("Content-Type: application/octet-stream")
-                    .expect("This should never fail"),
-            );
+            let response = Response::from_data(data)
+                .with_chunked_threshold(134401)
+                .with_header(
+                    tiny_http::Header::from_str("Content-Type: application/octet-stream")
+                        .expect("This should never fail"),
+                );
             dispatch_response(request, response);
         });
     }
