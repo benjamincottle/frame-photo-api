@@ -61,7 +61,6 @@ const EPD_HEIGHT: u32 = 448;
 #[allow(dead_code)]
 struct AlbumRecord {
     item_id: String,
-    product_url: String,
     ts: i64,
     portrait: bool,
     data: Vec<u8>,
@@ -71,9 +70,7 @@ struct AlbumRecord {
 struct TelemetryRecord {
     ts: i64,
     item_id: Option<String>,
-    product_url: Option<String>,
     item_id_2: Option<String>,
-    product_url_2: Option<String>,
     bat_voltage: i32,
     boot_code: i32,
     remote_addr: Vec<IpAddr>,
@@ -270,7 +267,7 @@ fn main() {
                         )
                     RETURNING item_id
                 )
-                SELECT item_id, product_url, ts, portrait, data
+                SELECT item_id, ts, portrait, data
                 FROM album
                 WHERE item_id IN (
                     SELECT item_id
@@ -287,10 +284,9 @@ fn main() {
                     for row in records.iter() {
                         let record = AlbumRecord {
                             item_id: row.get(0),
-                            product_url: row.get(1),
-                            ts: row.get(2),
-                            portrait: row.get(3),
-                            data: row.get(4),
+                            ts: row.get(1),
+                            portrait: row.get(2),
+                            data: row.get(3),
                         };
                         album_records.push(record);
                     }
@@ -342,12 +338,9 @@ fn main() {
                 }
             };
             let item_id = Some(album_records[0].item_id.to_string());
-            let product_url = Some(album_records[0].product_url.to_string());
             let mut item_id_2 = None;
-            let mut product_url_2 = None;
             if album_records.iter().filter(|r| r.portrait).count() == 2 {
                 item_id_2 = Some(album_records[1].item_id.to_string());
-                product_url_2 = Some(album_records[1].product_url.to_string());
             }
             let uploaded_data: LogDoc = request
                 .headers()
@@ -358,9 +351,7 @@ fn main() {
             let record = TelemetryRecord {
                 ts,
                 item_id: item_id.clone(),
-                product_url: product_url.clone(),
                 item_id_2: item_id_2.clone(),
-                product_url_2: product_url_2.clone(),
                 bat_voltage: uploaded_data.batVoltage,
                 boot_code: uploaded_data.bootCode,
                 remote_addr: vec![request
@@ -370,14 +361,12 @@ fn main() {
             };
             dbclient.execute(
                     "
-                    INSERT INTO telemetry (ts, item_id, product_url, item_id_2, product_url_2, bat_voltage, boot_code, remote_addr) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", 
+                    INSERT INTO telemetry (ts, item_id, item_id_2, bat_voltage, boot_code, remote_addr) 
+                    VALUES ($1, $2, $3, $4, $5, $6)", 
                     &[
                         &record.ts,
                         &record.item_id,
-                        &record.product_url,
                         &record.item_id_2,
-                        &record.product_url_2,
                         &record.bat_voltage,
                         &record.boot_code,
                         &record.remote_addr,

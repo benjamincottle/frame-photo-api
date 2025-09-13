@@ -1,6 +1,7 @@
-# build the image: docker build . -t rust_cross_compile/aarch64
-# run the container: docker run --rm -v $(pwd):/app rust_cross_compile/aarch64
-FROM rust:1.79.0-bookworm
+
+# build the image: docker build . -t rust_cross_compile:aarch64_1.88.0-bookworm
+# run the container: docker run --rm -v $(pwd):/app rust_cross_compile:aarch64_1.88.0-bookworm
+FROM rust:1.88.0-bookworm
 RUN apt update && apt upgrade -y 
 RUN apt install -y g++-aarch64-linux-gnu
 RUN groupadd -g 1000 build && useradd -u 1000 -g build -s /bin/bash -m build
