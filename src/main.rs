@@ -13,7 +13,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tiny_http::{Request, Response, Server};
-use ureq::serde_json;
+use serde_json;
 
 lazy_static! {
     pub static ref CONNECTION_POOL: Mutex<VecDeque<Client>> = {
@@ -170,15 +170,13 @@ fn log_request(request: &tiny_http::Request, status: u16, size: usize) {
 }
 
 fn main() {
-    // for debugging purposes
-    if env::var_os("RUST_LOG").is_none() {
-        env::set_var("RUST_LOG", "info");
-    }
-    if env::var_os("RUST_BACKTRACE").is_none() {
-        env::set_var("RUST_BACKTRACE", "1");
-    }
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    #[cfg(debug_assertions)]
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("{info}");
+        eprintln!("{}", std::backtrace::Backtrace::force_capture());
+    }));
     // dotenv::from_filename("secrets/.env").ok(); // used in dev only
-    env_logger::init();
     if env::var("API_KEY").is_err() || env::var("POSTGRES_CONNECTION_STRING").is_err() {
         log::error!("environment not configured");
         return;
