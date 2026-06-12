@@ -1,14 +1,41 @@
 
-# build the image: docker build . -t rust_cross_compile:aarch64_1-slim-bookworm
-# run the container: docker run --rm -v $(pwd):/app rust_cross_compile:aarch64_1-slim-bookworm
-FROM rust:1-slim-bookworm
-RUN apt update && apt upgrade -y 
-RUN apt install -y g++-aarch64-linux-gnu
-RUN groupadd -g 1000 build && useradd -u 1000 -g build -s /bin/bash -m build
-USER 1000:1000
-WORKDIR /app 
+# Force the builder stage to ALWAYS run natively on your host architecture (amd64)
+# This prevents Docker from trying to run the Rust compiler inside slow ARM emulation
+FROM --platform=$BUILDPLATFORM rust:1-slim-trixie AS builder
+
+# Install the aarch64 cross-linker (only strictly needed if we are building for arm64)
+RUN apt-get update && apt-get install -y \
+    g++-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN rustup target add aarch64-unknown-linux-gnu 
+
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
-    RUSTFLAGS="-C link-arg=-s" 
-CMD ["cargo", "build", "--release", "--target", "aarch64-unknown-linux-gnu"]
+    RUSTFLAGS="-C link-arg=-s"
+
+WORKDIR /app
+COPY . .
+
+# Bring in the target architecture variable automatically supplied by Buildx
+ARG TARGETARCH
+
+# Dynamically compile based on what Buildx requested for this specific pass
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        cargo build --release --target aarch64-unknown-linux-gnu && \
+        cp target/aarch64-unknown-linux-gnu/release/photo_api /app/photo_api-final; \
+    else \
+        cargo build --release && \
+        cp target/release/photo_api /app/photo_api-final; \
+    fi
+
+# --- Final Stage ---
+# This automatically pulls the matching debian image for the target platform
+FROM debian:trixie-slim
+WORKDIR /app
+
+# Copy the correctly built binary from the temporary location
+COPY --from=builder /app/photo_api-final /app/photo_api
+
+EXPOSE 5000
+CMD ["./photo_api"]

@@ -1,0 +1,4 @@
+target/
+deploy.sh
+.git/
+.gitignore
