@@ -6,12 +6,12 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-chrono = { version = "0.4.44", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 dotenv = "0.15.0"
 env_logger = "0.11.10"
 lazy_static = "1.4.0"
-log = "0.4.30"
-postgres = { version = "0.19.13" }
+log = "0.4.32"
+postgres = { version = "0.19.14" }
 serde = { version = "1.0.228", features = ["derive"] }
 tiny_http = "0.12.0"
 ureq = { version = "3.3.0", features = ["json"] }

@@ -2,3 +2,5 @@ target/
 deploy.sh
 .git/
 .gitignore
+Dockerfile
+.dockerignore

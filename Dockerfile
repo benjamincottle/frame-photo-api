@@ -31,7 +31,7 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
 
 # --- Final Stage ---
 # This automatically pulls the matching debian image for the target platform
-FROM debian:trixie-slim
+FROM gcr.io/distroless/cc-debian13
 WORKDIR /app
 
 # Copy the correctly built binary from the temporary location
