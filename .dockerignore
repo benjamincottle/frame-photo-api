@@ -1,4 +1,5 @@
 target/
+.github/
 deploy.sh
 .git/
 .gitignore
