@@ -19,7 +19,7 @@ permissions:
   packages: write
 
 env:
-  UPSTREAM_IMAGE: gcr.io/distroless/cc-debian13
+  UPSTREAM_IMAGE: gcr.io/distroless/cc-debian13:nonroot
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/frame-photo-api
   DIGEST_FILE: .cache/upstream-digest
 

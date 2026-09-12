@@ -1,2 +1,6 @@
 /target
 deploy.sh
+.env
+*.env
+secrets/
+.cache/
