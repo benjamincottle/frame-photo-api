@@ -627,6 +627,7 @@ dependencies = [
  "postgres",
  "serde",
  "serde_json",
+ "socket2",
  "tiny_http",
 ]
 

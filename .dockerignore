@@ -5,3 +5,6 @@ deploy.sh
 .gitignore
 Dockerfile
 .dockerignore
+.env
+*.env
+secrets/

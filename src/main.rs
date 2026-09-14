@@ -11,18 +11,25 @@
 //! * `POSTGRES_CONNECTION_STRING` libpq-style connection string (required)
 //! * `BIND_ADDR`                  listen address, default `0.0.0.0:5000`
 //! * `CORS_ALLOW_ORIGIN`          emit CORS headers for this origin; off by default
-//! * `TRUST_X_FORWARDED_FOR`      `1`/`true` to record X-Forwarded-For hops in
-//!   telemetry; only enable behind a proxy you control
+//! * `TRUST_X_FORWARDED_FOR`      `1`/`true` to take the client address for logs
+//!   and telemetry from X-Forwarded-For; only enable behind a proxy you control
+//!
+//! `API_KEY` and `POSTGRES_CONNECTION_STRING` may instead be supplied as
+//! `API_KEY_FILE` / `POSTGRES_CONNECTION_STRING_FILE`, naming a file (such as a
+//! Docker secret) that holds the value; a trailing newline is ignored.
 
 use postgres::{Client, Config as PgConfig, NoTls};
 use serde::Deserialize;
 use std::{
-    env,
-    io::{Read, Write},
-    net::{IpAddr, SocketAddr, TcpStream},
+    env, fs,
+    io::{Cursor, Read, Write},
+    net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     panic::{self, AssertUnwindSafe},
     process::exit,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -64,6 +71,32 @@ const PROBE_USER_AGENT: &str = "photo_api-probe";
 const LOG_FIELD_MAX: usize = 256;
 /// Upper bound on X-Forwarded-For entries recorded per request.
 const MAX_FORWARDED_HOPS: usize = 8;
+/// An API key shorter than this draws a warning at startup.
+const API_KEY_MIN_LEN: usize = 32;
+
+// --- client socket limits ---------------------------------------------------
+//
+// tiny_http sets no options on the sockets it accepts. On Linux an accepted
+// socket inherits its options from the listening socket, so they are set there
+// (see `bind_listener`). A *read* timeout is deliberately absent: Linux applies
+// SO_RCVTIMEO to accept(2) as well, and tiny_http treats an accept error as
+// fatal, so a read timeout would take the listener down whenever no client
+// connected for that long.
+
+/// Longest a single write to a client may block. Bounds a worker sending a
+/// frame to a client that has stopped reading.
+const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// TCP keepalive: after this much idle time, probe every `INTERVAL` and give
+/// up after `RETRIES` unanswered probes. Frees connection threads whose peer
+/// vanished without closing (proxy restart, network partition).
+const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
+/// Close the connection when sent data stays unacknowledged this long.
+const TCP_USER_TIMEOUT: Duration = Duration::from_secs(30);
+/// Requests that declare a body are answered on throwaway threads (see
+/// `respond_detached`); at most this many run at once.
+const MAX_DRAIN_THREADS: usize = 16;
 
 // --- configuration ----------------------------------------------------------
 
@@ -77,18 +110,28 @@ struct Config {
 
 impl Config {
     fn from_env() -> Result<Config, String> {
-        let api_key = env::var("API_KEY").map_err(|_| "API_KEY is not set".to_string())?;
+        let api_key =
+            secret_from_env("API_KEY")?.ok_or_else(|| "API_KEY is not set".to_string())?;
         if api_key.is_empty() {
             return Err("API_KEY is empty".to_string());
         }
-        // TODO: enforce a minimum key length (32+ random characters) and a
-        // printable-ASCII character set here. The key is compiled into the
-        // frame's firmware, so refusing a weak key would take the frame offline
-        // until it is reflashed; add the check together with the next key
-        // rotation.
+        // A weak key is reported, not refused: the key is compiled into the
+        // frame's firmware, and refusing it would take the frame offline until
+        // it is reflashed. Fix the key at the next rotation.
+        if api_key.len() < API_KEY_MIN_LEN {
+            log::warn!(
+                "API_KEY is {} bytes long; use at least {API_KEY_MIN_LEN} random characters",
+                api_key.len()
+            );
+        }
+        if !api_key.bytes().all(|b| b.is_ascii_graphic()) {
+            log::warn!(
+                "API_KEY contains whitespace or non-printable characters; use printable ASCII"
+            );
+        }
 
-        let database_url = env::var("POSTGRES_CONNECTION_STRING")
-            .map_err(|_| "POSTGRES_CONNECTION_STRING is not set".to_string())?;
+        let database_url = secret_from_env("POSTGRES_CONNECTION_STRING")?
+            .ok_or_else(|| "POSTGRES_CONNECTION_STRING is not set".to_string())?;
         let database = database_config(&database_url)?;
 
         let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string());
@@ -115,6 +158,22 @@ impl Config {
             trust_x_forwarded_for,
         })
     }
+}
+
+/// Read a secret from the file named by `<name>_FILE` (a Docker secret, say)
+/// when that variable is set, otherwise from `<name>` itself. A file keeps the
+/// secret out of `docker inspect` and of the environment of anything else that
+/// runs in the container.
+fn secret_from_env(name: &str) -> Result<Option<String>, String> {
+    let file_var = format!("{name}_FILE");
+    if let Ok(path) = env::var(&file_var)
+        && !path.is_empty()
+    {
+        let contents = fs::read_to_string(&path)
+            .map_err(|e| format!("could not read {file_var} ({path}): {e}"))?;
+        return Ok(Some(contents.trim_end_matches(['\r', '\n']).to_string()));
+    }
+    Ok(env::var(name).ok())
 }
 
 // --- database ---------------------------------------------------------------
@@ -525,13 +584,19 @@ fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name, value).expect("static header is well-formed")
 }
 
-fn text_response(status: u16, body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
+fn text_response(status: u16, body: &str) -> Response<Cursor<Vec<u8>>> {
     Response::from_string(body)
         .with_status_code(StatusCode(status))
         .with_header(header("Content-Type", "text/plain; charset=utf-8"))
 }
 
 fn handle_request(request: Request, cfg: &Config, db: &mut Db) {
+    // Nothing served here takes a body; see `respond_detached` for why one
+    // must not be handled on this thread.
+    if declares_body(&request) {
+        respond_detached(request, text_response(400, "Request body not allowed"), cfg);
+        return;
+    }
     let method = request.method().as_str();
     if method == "OPTIONS" {
         let mut response = Response::empty(204);
@@ -548,7 +613,7 @@ fn handle_request(request: Request, cfg: &Config, db: &mut Db) {
     // Authenticate before routing so unauthenticated clients learn nothing
     // about which paths exist.
     if let Err(reason) = authorize(&request, cfg) {
-        log::warn!("401 for {}: {reason}", peer_ip(&request));
+        log::warn!("401 for {}: {reason}", client_ip(&request, cfg));
         let mut response = text_response(401, "Unauthorized");
         response.add_header(header("WWW-Authenticate", "Bearer"));
         respond(request, response, cfg);
@@ -580,10 +645,18 @@ fn handle_request(request: Request, cfg: &Config, db: &mut Db) {
     }
 }
 
-fn respond<R: Read>(request: Request, mut response: Response<R>, cfg: &Config) {
+fn respond<R: Read>(request: Request, response: Response<R>, cfg: &Config) {
+    let response = with_common_headers(response, cfg);
+    let client = client_ip(&request, cfg);
+    send(request, response, &client);
+}
+
+fn with_common_headers<R: Read>(mut response: Response<R>, cfg: &Config) -> Response<R> {
     // Every response advances the photo rotation or is an error: never cache.
     response.add_header(header("Cache-Control", "no-store"));
     response.add_header(header("X-Content-Type-Options", "nosniff"));
+    // tiny_http would otherwise name itself and its version here.
+    response.add_header(header("Server", "photo-api"));
     if let Some(origin) = &cfg.cors_allow_origin {
         response.add_header(header("Access-Control-Allow-Origin", origin));
         response.add_header(header("Access-Control-Allow-Methods", "GET, OPTIONS"));
@@ -595,12 +668,92 @@ fn respond<R: Read>(request: Request, mut response: Response<R>, cfg: &Config) {
             response.add_header(header("Vary", "Origin"));
         }
     }
+    response
+}
+
+/// Write the response and log it. Consuming the request makes tiny_http read
+/// and discard any unread request body from the socket afterwards.
+fn send<R: Read>(request: Request, response: Response<R>, client: &str) {
     if !is_self_probe(&request) {
-        log_request(&request, response.status_code().0, response.data_length());
+        log_request(
+            &request,
+            client,
+            response.status_code().0,
+            response.data_length(),
+        );
     }
     if let Err(e) = request.respond(response) {
         log::warn!("could not send response: {e}");
     }
+}
+
+/// True if the request announces a body: a `Content-Length` above zero or any
+/// `Transfer-Encoding`.
+fn declares_body(request: &Request) -> bool {
+    request.body_length().is_some_and(|n| n > 0)
+        || header_value(request, "Transfer-Encoding").is_some()
+}
+
+/// Number of `respond_detached` threads currently alive.
+static DRAIN_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+/// Releases one `DRAIN_THREADS` slot when dropped.
+struct DrainSlot;
+
+impl Drop for DrainSlot {
+    fn drop(&mut self) {
+        DRAIN_THREADS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Answer a request that declared a body on a throwaway thread.
+///
+/// When a `Request` is dropped, tiny_http reads whatever remains of a
+/// `Content-Length` body from the socket so the connection can carry the next
+/// request. tiny_http 0.12 sets no socket read timeout, so a client that
+/// announces a body and never sends it parks the dropping thread until the
+/// client goes away. With `WORKER_THREADS` workers, that many such requests
+/// would stop the service answering anyone, the frame included. A reverse
+/// proxy in front usually closes the connection soon after the response, but
+/// nothing here relies on that.
+///
+/// The number of such threads is capped; beyond the cap the request is
+/// answered on the calling thread as before. If the thread cannot be spawned,
+/// the closure, and the request inside it, is dropped on this thread, so
+/// tiny_http answers 500 and drains the body here, again as before.
+fn respond_detached(request: Request, response: Response<Cursor<Vec<u8>>>, cfg: &Config) {
+    let response = with_common_headers(response, cfg);
+    let client = client_ip(&request, cfg);
+    let slot = DrainSlot;
+    if DRAIN_THREADS.fetch_add(1, Ordering::SeqCst) >= MAX_DRAIN_THREADS {
+        log::warn!("{client}: too many requests with unread bodies; answering inline");
+        send(request, response, &client);
+        return;
+    }
+    let spawned = thread::Builder::new()
+        .name("drain".to_string())
+        .spawn(move || {
+            let _slot = slot;
+            send(request, response, &client);
+        });
+    if let Err(e) = spawned {
+        log::warn!("could not spawn a thread to answer a request with a body: {e}");
+    }
+}
+
+/// Bind the listening socket with the options every accepted connection should
+/// inherit; see the "client socket limits" constants for what and why.
+fn bind_listener(addr: &str) -> std::io::Result<TcpListener> {
+    let socket = socket2::Socket::from(TcpListener::bind(addr)?);
+    socket.set_write_timeout(Some(SOCKET_WRITE_TIMEOUT))?;
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(TCP_KEEPALIVE_IDLE)
+        .with_interval(TCP_KEEPALIVE_INTERVAL)
+        .with_retries(TCP_KEEPALIVE_RETRIES);
+    socket.set_tcp_keepalive(&keepalive)?;
+    #[cfg(target_os = "linux")]
+    socket.set_tcp_user_timeout(Some(TCP_USER_TIMEOUT))?;
+    Ok(socket.into())
 }
 
 // --- liveness ---------------------------------------------------------------
@@ -727,8 +880,23 @@ fn peer_ip(request: &Request) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-fn log_request(request: &Request, status: u16, size: Option<usize>) {
-    let remote_addr = peer_ip(request);
+/// The address a request is attributed to in logs. Behind a trusted proxy that
+/// is the last X-Forwarded-For entry: the proxy appended it, so it is the only
+/// entry the proxy vouches for (a client can put anything in the earlier ones).
+/// Otherwise it is the peer itself.
+fn client_ip(request: &Request, cfg: &Config) -> String {
+    if cfg.trust_x_forwarded_for
+        && let Some(forwarded) = header_value(request, "X-Forwarded-For")
+        && let Some(ip) = forwarded
+            .rsplit(',')
+            .find_map(|hop| hop.trim().parse::<IpAddr>().ok())
+    {
+        return ip.to_string();
+    }
+    peer_ip(request)
+}
+
+fn log_request(request: &Request, client: &str, status: u16, size: Option<usize>) {
     let date_time = chrono::Local::now().format("%d/%b/%Y:%H:%M:%S %z");
     let method = log_safe(request.method().as_str());
     let uri = log_safe(request.url());
@@ -743,7 +911,7 @@ fn log_request(request: &Request, status: u16, size: Option<usize>) {
         .map(log_safe)
         .unwrap_or_else(|| "-".to_string());
     println!(
-        "{remote_addr} [{date_time}] \"{method} {uri} HTTP/{protocol}\" {status} {size} \"{referer}\" \"{user_agent}\""
+        "{client} [{date_time}] \"{method} {uri} HTTP/{protocol}\" {status} {size} \"{referer}\" \"{user_agent}\""
     );
 }
 
@@ -803,10 +971,17 @@ fn main() {
         exit(1);
     }
 
-    let server = match Server::http(&cfg.bind_addr) {
-        Ok(server) => server,
+    let listener = match bind_listener(&cfg.bind_addr) {
+        Ok(listener) => listener,
         Err(e) => {
             log::error!("could not listen on {}: {e}", cfg.bind_addr);
+            exit(1);
+        }
+    };
+    let server = match Server::from_listener(listener, None) {
+        Ok(server) => server,
+        Err(e) => {
+            log::error!("could not start server on {}: {e}", cfg.bind_addr);
             exit(1);
         }
     };

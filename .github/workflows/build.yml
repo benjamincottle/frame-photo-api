@@ -10,13 +10,13 @@ on:
       - Cargo.lock
       - .github/workflows/build.yml
   schedule:
-    # Daily upstream-digest check for gcr.io/distroless/cc-debian13
+    # Daily upstream-digest check for gcr.io/distroless/cc-debian13:nonroot
     - cron: '17 4 * * *'
   workflow_dispatch: {}
 
-permissions:
-  contents: write
-  packages: write
+# No token permissions by default; each job declares exactly what it needs, so
+# the third-party Docker actions never run with the ability to push to main.
+permissions: {}
 
 env:
   UPSTREAM_IMAGE: gcr.io/distroless/cc-debian13:nonroot
@@ -26,12 +26,19 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # This job never pushes; don't leave the token in .git/config where
+          # later steps could read it.
+          persist-credentials: false
 
       - name: Restore last-known upstream digest
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.DIGEST_FILE }}
           key: upstream-digest-${{ github.run_id }}
@@ -59,11 +66,11 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.compare.outputs.changed == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
         if: steps.compare.outputs.changed == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -71,7 +78,7 @@ jobs:
 
       - name: Build and push
         if: steps.compare.outputs.changed == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/arm64
@@ -84,6 +91,23 @@ jobs:
         run: |
           mkdir -p "$(dirname "$DIGEST_FILE")"
           echo "${{ steps.upstream.outputs.digest }}" > "$DIGEST_FILE"
+
+  # GitHub disables scheduled workflows in public repositories after 60 days
+  # without repository activity. Once the last commit is older than 45 days this
+  # job commits a timestamp so the daily base-image rebuild keeps running. The
+  # commit touches only .github/keepalive, which the push trigger's path filter
+  # ignores, so it never causes a rebuild. It is the only job allowed to write
+  # to the repository and runs nothing third-party beyond the pinned checkout.
+  # On push and manual runs the last commit is fresh, so it only needs to run
+  # on the schedule.
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Keep scheduled trigger alive
         run: |

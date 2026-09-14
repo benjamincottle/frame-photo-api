@@ -1,0 +1,41 @@
+name: Dependency audit
+
+on:
+  push:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .cargo/audit.toml
+      - .github/workflows/audit.yml
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .cargo/audit.toml
+  schedule:
+    # Daily: new advisories are published against dependencies that have not changed.
+    # (The keepalive job in build.yml keeps the repository active so this schedule
+    # is not auto-disabled after 60 idle days.)
+    - cron: '41 4 * * *'
+  workflow_dispatch: {}
+
+# checks: write lets the action publish a check run with the findings;
+# issues: write lets scheduled runs open an issue per new advisory.
+permissions:
+  contents: read
+  issues: write
+  checks: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Advisories that are deliberately accepted (with the reason why) live in
+      # .cargo/audit.toml so a local `cargo audit` reports the same result as CI.
+      - name: cargo audit (RustSec advisory database)
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
