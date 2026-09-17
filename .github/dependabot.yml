@@ -1,0 +1,10 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily" # Options: daily, weekly, monthly
+    groups:
+      actions:
+        patterns:
+          - "*" # Groups all action updates into one weekly PR to avoid noise
