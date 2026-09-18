@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  rust-checks:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner ships rustc and rustfmt but not clippy, and the toolchain
+      # is deliberately unpinned so it tracks the same stable release the
+      # rust:1 builder image in the Dockerfile does.
+      - name: Add clippy and rustfmt
+        id: rust
+        run: |
+          rustup component add clippy rustfmt
+          echo "version=$(rustc --version | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-rust${{ steps.rust.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-rust${{ steps.rust.outputs.version }}-
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      # --locked fails if Cargo.lock would need changing, so CI can't silently
+      # resolve to versions that were never committed or reviewed.
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked --all-features
+
+  # Workflow syntax errors are caught on the PR
+  # rather than after they have already landed on main.
+  lint-workflows:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+        run: |
+          curl -sSfL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_arm64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+
+      # Exits non-zero on any finding; also runs shellcheck on run: scripts.
+      - name: actionlint
+        run: ./actionlint -color
+
+  # build.yml only runs on main, so without this a broken Dockerfile is not
+  # discovered until after the merge. Skipped only on a main push, where
+  # build.yml does the real build and running both would build it twice;
+  # pull_request and workflow_dispatch both still validate it.
+  docker-build:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
