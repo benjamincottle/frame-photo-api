@@ -3,8 +3,24 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "daily" # Options: daily, weekly, monthly
+      interval: "weekly" # Options: daily, weekly, monthly
     groups:
       actions:
         patterns:
           - "*" # Groups all action updates into one weekly PR to avoid noise
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      cargo:
+        patterns:
+          - "*" # One grouped PR per week instead of one per crate
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major" # Breaking bumps stay manual

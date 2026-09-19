@@ -2,6 +2,10 @@ name: Dependency audit
 
 on:
   push:
+    # main only: without this, a push to a PR branch fires push *and*
+    # pull_request, and the event_name in the concurrency key stops them
+    # cancelling each other, so the same commit gets audited twice.
+    branches: [main]
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -12,23 +16,30 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .cargo/audit.toml
+      - .github/workflows/audit.yml
   schedule:
-    # Daily: new advisories are published against dependencies that have not changed.
-    # (The keepalive job in build.yml keeps the repository active so this schedule
-    # is not auto-disabled after 60 idle days.)
-    - cron: '41 4 * * *'
+    - cron: '41 16 * * *'
   workflow_dispatch: {}
 
-# checks: write lets the action publish a check run with the findings;
-# issues: write lets scheduled runs open an issue per new advisory.
-permissions:
-  contents: read
-  issues: write
-  checks: write
+# Cancel a superseded run (e.g. rapid pushes to a PR), but keep push/schedule
+# runs separate since they aren't racing on the same trigger. Keyed on
+# github.workflow so it can't collide with build.yml's concurrency group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+# No token permissions by default; the job declares exactly what it needs.
+permissions: {}
 
 jobs:
   audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
+    # checks: write lets the action publish a check run with the findings;
+    # issues: write lets scheduled runs open an issue per new advisory.
+    permissions:
+      contents: read
+      issues: write
+      checks: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,6 +47,17 @@ jobs:
       # Advisories that are deliberately accepted (with the reason why) live in
       # .cargo/audit.toml so a local `cargo audit` reports the same result as CI.
       - name: cargo audit (RustSec advisory database)
+        # Dependabot runs get a read-only token, so this action can't publish
+        # its check run there; the next step covers those PRs instead.
+        if: github.actor != 'dependabot[bot]'
         uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same audit via the CLI, which needs no token: findings fail the job and
+      # show in the log rather than as a check run or issue.
+      - name: cargo audit (Dependabot PRs)
+        if: github.actor == 'dependabot[bot]'
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
