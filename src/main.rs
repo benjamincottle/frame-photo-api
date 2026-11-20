@@ -897,7 +897,7 @@ fn client_ip(request: &Request, cfg: &Config) -> String {
 }
 
 fn log_request(request: &Request, client: &str, status: u16, size: Option<usize>) {
-    let date_time = chrono::Local::now().format("%d/%b/%Y:%H:%M:%S %z");
+    let date_time = jiff::ZonedDateTime::now().strftime("%d/%b/%Y:%H:%M:%S %z");
     let method = log_safe(request.method().as_str());
     let uri = log_safe(request.url());
     let protocol = request.http_version();
